@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect } from 'vitest'
 import { buildAnalysisPrompt, buildChatMessages, parseLLMResponse } from '../prompt'
 import type { SpecFile } from '../types'
 
@@ -46,9 +46,7 @@ describe('prompt', () => {
       const specs: SpecFile[] = []
       const customInstructions = 'Custom instructions here'
 
-      const prompt = buildAnalysisPrompt(diff, specs, {
-        customInstructions,
-      })
+      const prompt = buildAnalysisPrompt(diff, specs, { customInstructions })
 
       expect(prompt).toContain(customInstructions)
     })
@@ -57,11 +55,9 @@ describe('prompt', () => {
       const diff = 'const x = 1;'
       const specs: SpecFile[] = []
 
-      const prompt = buildAnalysisPrompt(diff, specs, {
-        includeInstructions: false,
-      })
+      const prompt = buildAnalysisPrompt(diff, specs, { includeInstructions: false })
 
-      expect(prompt).not.toContain('Qué tests probablemente se rompieron')
+      expect(prompt).not.toContain('IMPORTANTE: cada test debe aparecer')
     })
   })
 
@@ -79,31 +75,52 @@ describe('prompt', () => {
   })
 
   describe('parseLLMResponse', () => {
-    it('should parse broken tests with 🔴 emoji', () => {
-      const response = `
-🔴 ROTO
-test "should fail"
-      `.trim()
+    const sampleResponse = `
+## 📋 Resumen ejecutivo
+Se cambió el selector del botón de login.
 
-      const result = parseLLMResponse(response)
+## 🔴 Tests rotos
+- **login should redirect to dashboard** — el selector cambió en la línea 12
 
-      expect(result.broken.length).toBeGreaterThanOrEqual(0)
+## 🟡 Tests en riesgo
+- **checkout flow completes** — depende del componente de auth modificado
+
+## 🟢 Tests no afectados
+- **home page loads correctly** — no hay cambios en esa ruta
+    `.trim()
+
+    it('should parse broken test names', () => {
+      const result = parseLLMResponse(sampleResponse)
+
+      expect(result.broken).toEqual(['login should redirect to dashboard'])
     })
 
-    it('should parse risk tests with 🟡 emoji', () => {
-      const response = '🟡 RIESGO\ntest "might fail"'
+    it('should parse risk test names', () => {
+      const result = parseLLMResponse(sampleResponse)
 
-      const result = parseLLMResponse(response)
-
-      expect(result.risk.length).toBeGreaterThanOrEqual(0)
+      expect(result.risk).toEqual(['checkout flow completes'])
     })
 
-    it('should parse ok tests with 🟢 emoji', () => {
-      const response = '🟢 OK\ntest "should pass"'
+    it('should parse ok test names', () => {
+      const result = parseLLMResponse(sampleResponse)
 
+      expect(result.ok).toEqual(['home page loads correctly'])
+    })
+
+    it('should return empty arrays for empty response', () => {
+      const result = parseLLMResponse('')
+
+      expect(result.broken).toHaveLength(0)
+      expect(result.risk).toHaveLength(0)
+      expect(result.ok).toHaveLength(0)
+    })
+
+    it('should handle response with no tests in a section', () => {
+      const response = `## 🔴 Tests rotos\nNinguno\n## 🟡 Tests en riesgo\n- **risky test** — might break`
       const result = parseLLMResponse(response)
 
-      expect(result.ok.length).toBeGreaterThanOrEqual(0)
+      expect(result.broken).toHaveLength(0)
+      expect(result.risk).toEqual(['risky test'])
     })
   })
 })

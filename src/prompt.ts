@@ -5,15 +5,35 @@ export interface PromptOptions {
   customInstructions?: string
 }
 
-const DEFAULT_INSTRUCTIONS = `Analiza los cambios y dime:
-1. Qué tests probablemente se rompieron y por qué (sé específico: nombre del test, línea del spec y qué parte del cambio lo rompe)
-2. Qué tests son riesgo pero no certeza y por qué
-3. Qué tests no se ven afectados
+const DEFAULT_INSTRUCTIONS = `Analiza los cambios y responde ÚNICAMENTE con el siguiente formato markdown. No agregues texto fuera de este formato.
 
-Formato de respuesta:
-- Usa emojis: 🔴 ROTO, 🟡 RIESGO, 🟢 OK
-- Por cada test afectado: nombre, archivo, línea aproximada, motivo
-- Al final un resumen de cuántos tests están en cada categoría`
+## 📋 Resumen ejecutivo
+Una sola oración explicando qué cambió y el impacto general (para producto y management).
+
+## 🔴 Tests rotos
+Tests que SEGURAMENTE fallarán por estos cambios. Si no hay ninguno, escribe "Ninguno".
+Para cada test:
+- **nombre del test** — motivo concreto (qué línea del diff lo rompe)
+
+## 🟡 Tests en riesgo
+Tests que PODRÍAN fallar dependiendo del contexto. Si no hay ninguno, escribe "Ninguno".
+Para cada test:
+- **nombre del test** — por qué es riesgo (qué suposición podría fallar)
+
+## 🟢 Tests no afectados
+Tests que siguen funcionando sin cambios. Si no hay ninguno, escribe "Ninguno".
+Para cada test:
+- **nombre del test** — por qué no se ve afectado
+
+## 📊 Totales
+| Categoría | Cantidad |
+|-----------|----------|
+| 🔴 Rotos | N |
+| 🟡 Riesgo | N |
+| 🟢 OK | N |
+| **Total** | **N** |
+
+IMPORTANTE: cada test debe aparecer en UNA SOLA categoría.`
 
 export function buildAnalysisPrompt(
   diff: string,
@@ -60,23 +80,22 @@ export function parseLLMResponse(content: string): {
   const risk: string[] = []
   const ok: string[] = []
 
-  const lines = content.split('\n')
+  let currentSection: 'broken' | 'risk' | 'ok' | null = null
 
-  for (const line of lines) {
-    if (line.includes('🔴 ROTO') || line.startsWith('- ') && line.toLowerCase().includes('roto')) {
-      const match = line.match(/[`"]?([^\n`"]+)[`"]?\s*[-:]\s*(.+)/)
+  for (const line of content.split('\n')) {
+    const trimmed = line.trim()
+
+    if (trimmed.includes('🔴')) {
+      currentSection = 'broken'
+    } else if (trimmed.includes('🟡')) {
+      currentSection = 'risk'
+    } else if (trimmed.includes('🟢')) {
+      currentSection = 'ok'
+    } else if (currentSection && trimmed.startsWith('- **')) {
+      const match = trimmed.match(/^- \*\*(.+?)\*\*/)
       if (match) {
-        broken.push(match[1].trim())
-      }
-    } else if (line.includes('🟡 RIESGO')) {
-      const match = line.match(/[`"]?([^\n`"]+)[`"]?\s*[-:]\s*(.+)/)
-      if (match) {
-        risk.push(match[1].trim())
-      }
-    } else if (line.includes('🟢 OK')) {
-      const match = line.match(/[`"]?([^\n`"]+)[`"]?\s*[-:]\s*(.+)/)
-      if (match) {
-        ok.push(match[1].trim())
+        const bucket = currentSection === 'broken' ? broken : currentSection === 'risk' ? risk : ok
+        bucket.push(match[1].trim())
       }
     }
   }

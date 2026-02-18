@@ -29,11 +29,3 @@ export function createSpecsReader(): SpecsReader {
     },
   }
 }
-
-export function filterSpecsByPattern(specs: SpecFile[], pattern: RegExp): SpecFile[] {
-  return specs.filter((spec) => pattern.test(spec.name))
-}
-
-export function getSpecFilesCount(specs: SpecFile[]): number {
-  return specs.length
-}

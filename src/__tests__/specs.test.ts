@@ -1,50 +1,49 @@
-import { describe, it, expect } from 'vitest'
-import { filterSpecsByPattern, getSpecFilesCount } from '../specs'
-import type { SpecFile } from '../types'
+import { describe, it, expect, vi } from 'vitest'
+import * as fs from 'fs'
+import { createSpecsReader } from '../specs'
+import { SpecsNotFoundError } from '../error'
 
-describe('specs', () => {
-  describe('getSpecFilesCount', () => {
-    it('should return correct count', () => {
-      const specs: SpecFile[] = [
-        { name: 'a.spec.ts', content: 'test a' },
-        { name: 'b.spec.ts', content: 'test b' },
-        { name: 'c.spec.ts', content: 'test c' },
-      ]
+vi.mock('fs')
 
-      expect(getSpecFilesCount(specs)).toBe(3)
-    })
+describe('createSpecsReader', () => {
+  it('should throw SpecsNotFoundError when specs directory does not exist', () => {
+    vi.mocked(fs.existsSync).mockReturnValue(false)
 
-    it('should return 0 for empty array', () => {
-      expect(getSpecFilesCount([])).toBe(0)
-    })
+    const reader = createSpecsReader()
+
+    expect(() => reader.readSpecs('/some/path')).toThrow(SpecsNotFoundError)
   })
 
-  describe('filterSpecsByPattern', () => {
-    const specs: SpecFile[] = [
-      { name: 'login.spec.ts', content: 'test login' },
-      { name: 'logout.spec.ts', content: 'test logout' },
-      { name: 'home.spec.ts', content: 'test home' },
-      { name: 'auth.spec.ts', content: 'test auth' },
-    ]
+  it('should return only .spec.ts files', () => {
+    vi.mocked(fs.existsSync).mockReturnValue(true)
+    vi.mocked(fs.readdirSync).mockReturnValue(['login.spec.ts', 'README.md', 'helper.ts'] as any)
+    vi.mocked(fs.readFileSync).mockReturnValue('test content' as any)
 
-    it('should filter specs by pattern', () => {
-      const result = filterSpecsByPattern(specs, /login|logout/)
+    const reader = createSpecsReader()
+    const specs = reader.readSpecs('/some/path')
 
-      expect(result).toHaveLength(2)
-      expect(result.map((s) => s.name)).toContain('login.spec.ts')
-      expect(result.map((s) => s.name)).toContain('logout.spec.ts')
-    })
+    expect(specs).toHaveLength(1)
+    expect(specs[0].name).toBe('login.spec.ts')
+  })
 
-    it('should return empty array when no match', () => {
-      const result = filterSpecsByPattern(specs, /nonexistent/)
+  it('should read file content correctly', () => {
+    vi.mocked(fs.existsSync).mockReturnValue(true)
+    vi.mocked(fs.readdirSync).mockReturnValue(['test.spec.ts'] as any)
+    vi.mocked(fs.readFileSync).mockReturnValue('it("works", () => {})' as any)
 
-      expect(result).toHaveLength(0)
-    })
+    const reader = createSpecsReader()
+    const specs = reader.readSpecs('/some/path')
 
-    it('should return all specs when pattern matches all', () => {
-      const result = filterSpecsByPattern(specs, /\.spec\.ts$/)
+    expect(specs[0].content).toBe('it("works", () => {})')
+  })
 
-      expect(result).toHaveLength(4)
-    })
+  it('should return empty array when no spec files exist', () => {
+    vi.mocked(fs.existsSync).mockReturnValue(true)
+    vi.mocked(fs.readdirSync).mockReturnValue(['README.md', 'helper.ts'] as any)
+
+    const reader = createSpecsReader()
+    const specs = reader.readSpecs('/some/path')
+
+    expect(specs).toHaveLength(0)
   })
 })

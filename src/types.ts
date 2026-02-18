@@ -49,13 +49,14 @@ export interface Config {
   maxTokens: number
   temperature: number
   repeatPenalty: number
+  githubOwner?: string
+  githubRepo?: string
+  githubToken?: string
 }
 
-export interface AppDependencies {
-  config: Config
-  llmClient: LLMClient
-  git: GitOperations
-  specsReader: SpecsReader
+export interface GitHubClient {
+  getPRDiff(prNumber: number): Promise<string>
+  postComment(prNumber: number, body: string): Promise<void>
 }
 
 export interface GitOperations {
@@ -67,6 +68,16 @@ export interface SpecsReader {
   readSpecs(repoPath: string): SpecFile[]
 }
 
-export interface LLMClientFactory {
-  create(config: Config): LLMClient
+export interface AnalyzerDependencies {
+  config: Config
+  llmClient: LLMClient
+  git: GitOperations
+  specsReader: SpecsReader
+}
+
+export interface PRAnalyzerDependencies {
+  config: Config
+  llmClient: LLMClient
+  specsReader: SpecsReader
+  githubClient: GitHubClient
 }

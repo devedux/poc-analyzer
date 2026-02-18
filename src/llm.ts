@@ -1,5 +1,5 @@
 import { Ollama } from 'ollama'
-import type { LLMClient, LLMClientFactory, ChatMessage, LLMOptions, LLMResponse, Config } from './types'
+import type { LLMClient, ChatMessage, LLMOptions, LLMResponse, Config } from './types'
 import { LLMError } from './error'
 
 export function createOllamaClient(config: Config): LLMClient {
@@ -11,7 +11,7 @@ export function createOllamaClient(config: Config): LLMClient {
         const stream = await ollama.chat({
           model: options?.model ?? config.model,
           messages: messages.map((m) => ({ role: m.role, content: m.content })),
-          stream: true,
+          stream: options?.stream ?? true,
           options: {
             num_predict: options?.maxTokens ?? config.maxTokens,
             temperature: options?.temperature ?? config.temperature,
@@ -47,12 +47,6 @@ export function createOllamaClient(config: Config): LLMClient {
   }
 }
 
-export class OllamaClientFactory implements LLMClientFactory {
-  create(config: Config): LLMClient {
-    return createOllamaClient(config)
-  }
-}
-
 export class MockLLMClient implements LLMClient {
   private responses: string[]
 
@@ -60,7 +54,7 @@ export class MockLLMClient implements LLMClient {
     this.responses = responses
   }
 
-  async *chat(messages: ChatMessage[], _options?: LLMOptions): AsyncGenerator<LLMResponse> {
+  async *chat(_messages: ChatMessage[], _options?: LLMOptions): AsyncGenerator<LLMResponse> {
     for (const response of this.responses) {
       yield {
         message: {
@@ -74,7 +68,7 @@ export class MockLLMClient implements LLMClient {
     yield {
       message: {
         role: 'assistant',
-        content: this.responses[this.responses.length - 1] || '',
+        content: this.responses.join(''),
       },
       done: true,
     }

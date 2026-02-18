@@ -1,17 +1,13 @@
+import 'dotenv/config'
 import { getConfig, validateConfig } from './config'
 import { createGitOperations } from './git'
 import { createSpecsReader } from './specs'
 import { buildChatMessages } from './prompt'
 import { createOllamaClient, MockLLMClient } from './llm'
-import type { Config, LLMClient, GitOperations, SpecsReader } from './types'
+import type { AnalyzerDependencies, LLMResponse } from './types'
 import { AnalyzerError } from './error'
 
-export interface AnalyzerDependencies {
-  config: Config
-  llmClient: LLMClient
-  git: GitOperations
-  specsReader: SpecsReader
-}
+const SEPARATOR = '─'.repeat(60)
 
 export interface AnalyzeOptions {
   useMockLLM?: boolean
@@ -31,6 +27,26 @@ export function createDependencies(options: AnalyzeOptions = {}): AnalyzerDepend
   return { config, git, specsReader, llmClient }
 }
 
+export async function collectStream(
+  stream: AsyncGenerator<LLMResponse>,
+  onChunk?: (chunk: string) => void
+): Promise<string> {
+  let full = ''
+  let hasDoneChunk = false
+
+  for await (const chunk of stream) {
+    if (chunk.done) {
+      full = chunk.message.content
+      hasDoneChunk = true
+    } else {
+      if (!hasDoneChunk) full += chunk.message.content
+      onChunk?.(chunk.message.content)
+    }
+  }
+
+  return full
+}
+
 export async function runAnalysis(
   deps: AnalyzerDependencies,
   options: AnalyzeOptions = {}
@@ -46,26 +62,21 @@ export async function runAnalysis(
   }
 
   const specs = specsReader.readSpecs(config.e2eRepoPath)
-
   const messages = buildChatMessages(diff, specs)
 
   console.log('Analizando...\n')
-  console.log('─'.repeat(60))
+  console.log(SEPARATOR)
 
-  let fullResponse = ''
-
-  const stream = await llmClient.chat(messages)
-
-  for await (const chunk of stream) {
-    fullResponse += chunk.message.content
+  const stream = llmClient.chat(messages)
+  const fullResponse = await collectStream(stream, (chunk) => {
     if (options.onChunk) {
-      options.onChunk(chunk.message.content)
+      options.onChunk(chunk)
     } else {
-      process.stdout.write(chunk.message.content)
+      process.stdout.write(chunk)
     }
-  }
+  })
 
-  console.log('\n' + '─'.repeat(60))
+  console.log('\n' + SEPARATOR)
 
   return fullResponse
 }
@@ -73,13 +84,13 @@ export async function runAnalysis(
 export async function main() {
   console.log('🔍 poc-analyzer — Análisis de impacto en tests E2E\n')
 
-  const deps = createDependencies()
-
-  console.log(`📁 Front:  ${deps.config.frontRepoPath}`)
-  console.log(`📁 E2E:    ${deps.config.e2eRepoPath}`)
-  console.log(`🤖 Modelo: ${deps.config.model}\n`)
-
   try {
+    const deps = createDependencies()
+
+    console.log(`📁 Front:  ${deps.config.frontRepoPath}`)
+    console.log(`📁 E2E:    ${deps.config.e2eRepoPath}`)
+    console.log(`🤖 Modelo: ${deps.config.model}\n`)
+
     await runAnalysis(deps)
     console.log('\n✅ Análisis completado.\n')
   } catch (error) {
@@ -93,4 +104,6 @@ export async function main() {
   }
 }
 
-main()
+if (require.main === module) {
+  main()
+}

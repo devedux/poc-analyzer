@@ -1,0 +1,89 @@
+import 'dotenv/config'
+import { getConfig, validateConfig, validatePRConfig } from './config'
+import { createSpecsReader } from './specs'
+import { buildChatMessages } from './prompt'
+import { createOllamaClient } from './llm'
+import { createGitHubClient } from './github'
+import { collectStream } from './analyze'
+import type { PRAnalyzerDependencies } from './types'
+import { AnalyzerError } from './error'
+
+const SEPARATOR = '─'.repeat(60)
+
+export function createPRDependencies(): PRAnalyzerDependencies {
+  const config = getConfig()
+  validateConfig(config)
+  validatePRConfig(config)
+
+  return {
+    config,
+    llmClient: createOllamaClient(config),
+    specsReader: createSpecsReader(),
+    githubClient: createGitHubClient(config.githubToken!, config.githubOwner!, config.githubRepo!),
+  }
+}
+
+export async function runPRAnalysis(
+  deps: PRAnalyzerDependencies,
+  prNumber: number
+): Promise<void> {
+  const { config, llmClient, specsReader, githubClient } = deps
+
+  console.log(`🔍 poc-analyzer — Analizando PR #${prNumber}\n`)
+  console.log(`📁 E2E:    ${config.e2eRepoPath}`)
+  console.log(`🤖 Modelo: ${config.model}\n`)
+
+  console.log('📥 Obteniendo diff del PR desde GitHub...')
+  const diff = await githubClient.getPRDiff(prNumber)
+
+  if (!diff.trim()) {
+    console.log('ℹ️  El PR no tiene cambios.')
+    return
+  }
+
+  const specs = specsReader.readSpecs(config.e2eRepoPath)
+  const messages = buildChatMessages(diff, specs)
+
+  console.log('Analizando...\n')
+  console.log(SEPARATOR)
+
+  const stream = llmClient.chat(messages)
+  const fullResponse = await collectStream(stream, (chunk) => {
+    process.stdout.write(chunk)
+  })
+
+  console.log('\n' + SEPARATOR)
+
+  const comment = `## 🤖 Análisis de impacto en tests E2E\n\n${fullResponse}\n\n---\n*Generado por poc-analyzer con ${config.model}*`
+
+  console.log('\n💬 Posteando comentario en el PR...')
+  await githubClient.postComment(prNumber, comment)
+
+  console.log(`\n✅ Comentario publicado en PR #${prNumber}\n`)
+}
+
+async function main() {
+  const prNumber = parseInt(process.argv[2] ?? '', 10)
+
+  if (isNaN(prNumber) || prNumber <= 0) {
+    console.error('❌ Uso: tsx src/analyze-pr.ts <pr-number>')
+    process.exit(1)
+  }
+
+  try {
+    const deps = createPRDependencies()
+    await runPRAnalysis(deps, prNumber)
+  } catch (error) {
+    if (error instanceof AnalyzerError) {
+      console.error(`\n❌ ${error.message}`)
+      process.exit(error.recoverable ? 0 : 1)
+    }
+
+    console.error('\n❌ Error inesperado:', error)
+    process.exit(1)
+  }
+}
+
+if (require.main === module) {
+  main()
+}

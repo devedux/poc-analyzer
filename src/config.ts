@@ -1,5 +1,6 @@
 import { resolve } from 'path'
 import type { Config } from './types'
+import { ConfigurationError } from './error'
 
 const DEFAULT_FRONT_REPO = '../poc-front-app'
 const DEFAULT_E2E_REPO = '../poc-e2e-tests'
@@ -8,7 +9,7 @@ const DEFAULT_MAX_TOKENS = 1024
 const DEFAULT_TEMPERATURE = 0.1
 const DEFAULT_REPEAT_PENALTY = 1.3
 
-export const CONFIG = {
+const CONFIG = {
   get frontRepoPath(): string {
     return resolve(process.env.FRONT_REPO_PATH ?? DEFAULT_FRONT_REPO)
   },
@@ -35,7 +36,19 @@ export const CONFIG = {
     const envValue = process.env.OLLAMA_REPEAT_PENALTY
     return envValue ? parseFloat(envValue) : DEFAULT_REPEAT_PENALTY
   },
-} as const
+
+  get githubOwner(): string | undefined {
+    return process.env.GITHUB_OWNER
+  },
+
+  get githubRepo(): string | undefined {
+    return process.env.GITHUB_REPO
+  },
+
+  get githubToken(): string | undefined {
+    return process.env.GITHUB_TOKEN
+  },
+}
 
 export function getConfig(): Config {
   return {
@@ -45,6 +58,9 @@ export function getConfig(): Config {
     maxTokens: CONFIG.maxTokens,
     temperature: CONFIG.temperature,
     repeatPenalty: CONFIG.repeatPenalty,
+    githubOwner: CONFIG.githubOwner,
+    githubRepo: CONFIG.githubRepo,
+    githubToken: CONFIG.githubToken,
   }
 }
 
@@ -76,9 +92,14 @@ export function validateConfig(config: Config): void {
   }
 }
 
-export class ConfigurationError extends Error {
-  constructor(message: string) {
-    super(`Configuration error: ${message}`)
-    this.name = 'ConfigurationError'
+export function validatePRConfig(config: Config): void {
+  const errors: string[] = []
+
+  if (!config.githubToken) errors.push('GITHUB_TOKEN is required')
+  if (!config.githubOwner) errors.push('GITHUB_OWNER is required')
+  if (!config.githubRepo) errors.push('GITHUB_REPO is required')
+
+  if (errors.length > 0) {
+    throw new ConfigurationError(errors.join('; '))
   }
 }

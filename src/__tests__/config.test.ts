@@ -1,5 +1,6 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { getConfig, validateConfig, ConfigurationError, CONFIG } from '../config'
+import { describe, it, expect } from 'vitest'
+import { getConfig, validateConfig, validatePRConfig } from '../config'
+import { ConfigurationError } from '../error'
 import type { Config } from '../types'
 
 describe('config', () => {
@@ -26,6 +27,9 @@ describe('config', () => {
         OLLAMA_MAX_TOKENS: '2048',
         OLLAMA_TEMPERATURE: '0.5',
         OLLAMA_REPEAT_PENALTY: '1.5',
+        GITHUB_OWNER: 'my-org',
+        GITHUB_REPO: 'my-repo',
+        GITHUB_TOKEN: 'ghp_test',
       }
 
       try {
@@ -37,6 +41,9 @@ describe('config', () => {
         expect(config.maxTokens).toBe(2048)
         expect(config.temperature).toBe(0.5)
         expect(config.repeatPenalty).toBe(1.5)
+        expect(config.githubOwner).toBe('my-org')
+        expect(config.githubRepo).toBe('my-repo')
+        expect(config.githubToken).toBe('ghp_test')
       } finally {
         process.env = originalEnv
       }
@@ -110,14 +117,43 @@ describe('config', () => {
     })
   })
 
-  describe('CONFIG', () => {
-    it('should have all required properties', () => {
-      expect(CONFIG.frontRepoPath).toBeDefined()
-      expect(CONFIG.e2eRepoPath).toBeDefined()
-      expect(CONFIG.model).toBeDefined()
-      expect(CONFIG.maxTokens).toBeDefined()
-      expect(CONFIG.temperature).toBeDefined()
-      expect(CONFIG.repeatPenalty).toBeDefined()
+  describe('validatePRConfig', () => {
+    const baseConfig: Config = {
+      frontRepoPath: '/valid/path',
+      e2eRepoPath: '/valid/path',
+      model: 'llama3.2',
+      maxTokens: 1024,
+      temperature: 0.1,
+      repeatPenalty: 1.3,
+    }
+
+    it('should throw when githubToken is missing', () => {
+      expect(() =>
+        validatePRConfig({ ...baseConfig, githubOwner: 'org', githubRepo: 'repo' })
+      ).toThrow('GITHUB_TOKEN is required')
+    })
+
+    it('should throw when githubOwner is missing', () => {
+      expect(() =>
+        validatePRConfig({ ...baseConfig, githubToken: 'token', githubRepo: 'repo' })
+      ).toThrow('GITHUB_OWNER is required')
+    })
+
+    it('should throw when githubRepo is missing', () => {
+      expect(() =>
+        validatePRConfig({ ...baseConfig, githubToken: 'token', githubOwner: 'org' })
+      ).toThrow('GITHUB_REPO is required')
+    })
+
+    it('should not throw when all github fields are present', () => {
+      expect(() =>
+        validatePRConfig({
+          ...baseConfig,
+          githubToken: 'token',
+          githubOwner: 'org',
+          githubRepo: 'repo',
+        })
+      ).not.toThrow()
     })
   })
 })

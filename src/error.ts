@@ -4,6 +4,7 @@ export type ErrorCode =
   | 'SPECS_READ_ERROR'
   | 'LLM_ERROR'
   | 'VALIDATION_ERROR'
+  | 'CONFIGURATION_ERROR'
 
 export abstract class AnalyzerError extends Error {
   constructor(
@@ -62,5 +63,12 @@ export class ValidationError extends AnalyzerError {
   constructor(message: string) {
     super('VALIDATION_ERROR', message, false)
     this.name = 'ValidationError'
+  }
+}
+
+export class ConfigurationError extends AnalyzerError {
+  constructor(message: string) {
+    super('CONFIGURATION_ERROR', `Configuration error: ${message}`, false)
+    this.name = 'ConfigurationError'
   }
 }

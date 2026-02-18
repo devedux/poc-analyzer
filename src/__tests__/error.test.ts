@@ -6,6 +6,7 @@ import {
   SpecsReadError,
   LLMError,
   ValidationError,
+  ConfigurationError,
 } from '../error'
 
 describe('error', () => {
@@ -96,6 +97,23 @@ describe('error', () => {
       expect(error.code).toBe('VALIDATION_ERROR')
       expect(error.message).toBe('Invalid input')
       expect(error.name).toBe('ValidationError')
+    })
+  })
+
+  describe('ConfigurationError', () => {
+    it('should create error with prefixed message', () => {
+      const error = new ConfigurationError('missing field')
+
+      expect(error.code).toBe('CONFIGURATION_ERROR')
+      expect(error.message).toContain('missing field')
+      expect(error.name).toBe('ConfigurationError')
+      expect(error.recoverable).toBe(false)
+    })
+
+    it('should be an instance of AnalyzerError', () => {
+      const error = new ConfigurationError('test')
+
+      expect(error).toBeInstanceOf(AnalyzerError)
     })
   })
 })
