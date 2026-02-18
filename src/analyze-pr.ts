@@ -1,12 +1,14 @@
 import 'dotenv/config'
 import { getConfig, validateConfig, validatePRConfig } from './config'
 import { createSpecsReader } from './specs'
-import { buildChatMessages, buildChatMessagesFromAST } from './prompt'
+import { buildChatMessages, buildChatMessagesFromMatches } from './prompt'
 import { createOllamaClient } from './llm'
 import { createGitHubClient } from './github'
 import { collectStream } from './analyze'
 import { parseDiff, isCodeFile } from './diff-parser'
 import { analyzeWithAST } from './ast-analyzer'
+import { chunkSpecs } from './spec-chunker'
+import { matchChunks } from './semantic-matcher'
 import type { PRAnalyzerDependencies, ASTChunk } from './types'
 import { AnalyzerError } from './error'
 
@@ -61,10 +63,18 @@ export async function runPRAnalysis(
   }
 
   const specs = specsReader.readSpecs(config.e2eRepoPath)
-  const messages =
-    astChunks.length > 0
-      ? buildChatMessagesFromAST(astChunks, specs)
-      : buildChatMessages(rawDiff, specs)
+
+  let messages
+  if (astChunks.length > 0) {
+    console.log('🧠 Generando embeddings y buscando specs relevantes...')
+    const specChunks = chunkSpecs(specs)
+    const matches = await matchChunks(astChunks, specChunks)
+    const totalSpecs = matches.reduce((sum, m) => sum + m.relevantSpecs.length, 0)
+    console.log(`  ✓ ${specChunks.length} tests chunkeados → top ${totalSpecs} seleccionados`)
+    messages = buildChatMessagesFromMatches(matches)
+  } else {
+    messages = buildChatMessages(rawDiff, specs)
+  }
 
   console.log('Analizando...\n')
   console.log(SEPARATOR)

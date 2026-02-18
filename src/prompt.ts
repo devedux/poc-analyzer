@@ -1,4 +1,4 @@
-import type { SpecFile, ChatMessage, ASTChunk, DiffFile } from './types'
+import type { SpecFile, ChatMessage, ASTChunk, DiffFile, SemanticMatch } from './types'
 
 export interface PromptOptions {
   includeInstructions?: boolean
@@ -132,6 +132,48 @@ ${DEFAULT_INSTRUCTIONS}`
 
 export function buildChatMessagesFromAST(chunks: ASTChunk[], specs: SpecFile[]): ChatMessage[] {
   return [{ role: 'user', content: buildAnalysisPromptFromAST(chunks, specs) }]
+}
+
+/**
+ * Prompt más preciso: cada diff chunk va acompañado solo de sus specs relevantes.
+ * Reduce el ruido vs buildChatMessagesFromAST que aún pasa todos los specs.
+ */
+export function buildChatMessagesFromMatches(matches: SemanticMatch[]): ChatMessage[] {
+  const changesBlock = matches
+    .map(({ diffChunk, relevantSpecs }) => {
+      const lines: string[] = [`### ${diffChunk.filename}`]
+
+      if (diffChunk.summary) lines.push(`**Semántica:** ${diffChunk.summary}`)
+      if (diffChunk.testIds.length > 0)
+        lines.push(`**Test IDs involucrados:** \`${diffChunk.testIds.join('`, `')}\``)
+
+      lines.push('\n```diff')
+      lines.push(formatDiffLines({ filename: diffChunk.filename, rawDiff: diffChunk.rawDiff, hunks: diffChunk.hunks }))
+      lines.push('```')
+
+      if (relevantSpecs.length > 0) {
+        lines.push('\n**Tests más relacionados (por similitud semántica):**')
+        for (const { chunk, score } of relevantSpecs) {
+          lines.push(`\n#### ${chunk.testName} *(score: ${score.toFixed(2)})*`)
+          lines.push('```typescript')
+          lines.push(chunk.content)
+          lines.push('```')
+        }
+      }
+
+      return lines.join('\n')
+    })
+    .join('\n\n---\n\n')
+
+  const prompt = `Eres un experto en testing. Aquí están los cambios del PR con los tests más relevantes identificados por similitud semántica:
+
+<cambios_y_tests_relevantes>
+${changesBlock}
+</cambios_y_tests_relevantes>
+
+${DEFAULT_INSTRUCTIONS}`
+
+  return [{ role: 'user', content: prompt }]
 }
 
 export function parseLLMResponse(content: string): {

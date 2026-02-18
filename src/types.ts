@@ -119,3 +119,19 @@ export interface PRAnalyzerDependencies {
   specsReader: SpecsReader
   githubClient: GitHubClient
 }
+
+export interface SpecChunk {
+  testName: string
+  filename: string
+  content: string
+}
+
+export interface ScoredSpecChunk {
+  chunk: SpecChunk
+  score: number
+}
+
+export interface SemanticMatch {
+  diffChunk: ASTChunk
+  relevantSpecs: ScoredSpecChunk[]
+}
