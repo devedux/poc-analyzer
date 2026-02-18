@@ -56,7 +56,45 @@ export interface Config {
 
 export interface GitHubClient {
   getPRDiff(prNumber: number): Promise<string>
+  getFileContent(path: string, ref: string): Promise<string>
   postComment(prNumber: number, body: string): Promise<void>
+}
+
+export interface DiffLine {
+  type: 'added' | 'removed' | 'context'
+  content: string
+  newLineNumber: number | null
+  oldLineNumber: number | null
+}
+
+export interface DiffHunk {
+  oldStart: number
+  newStart: number
+  lines: DiffLine[]
+}
+
+export interface DiffFile {
+  filename: string
+  rawDiff: string
+  hunks: DiffHunk[]
+}
+
+export interface JSXChange {
+  element: string
+  attribute: string
+  addedValue?: string
+  removedValue?: string
+}
+
+export interface ASTChunk {
+  filename: string
+  rawDiff: string
+  hunks: DiffHunk[]
+  components: string[]
+  functions: string[]
+  jsxChanges: JSXChange[]
+  testIds: string[]
+  summary: string
 }
 
 export interface GitOperations {

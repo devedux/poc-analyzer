@@ -15,6 +15,7 @@ const mockConfig = {
 function makeDeps(overrides: Partial<PRAnalyzerDependencies> = {}): PRAnalyzerDependencies {
   const mockGitHub: GitHubClient = {
     getPRDiff: vi.fn().mockResolvedValue('mock diff content'),
+    getFileContent: vi.fn().mockResolvedValue(''),
     postComment: vi.fn().mockResolvedValue(undefined),
   }
 
@@ -53,6 +54,7 @@ describe('runPRAnalysis', () => {
   it('should not post a comment when the PR has no diff', async () => {
     const mockGitHub: GitHubClient = {
       getPRDiff: vi.fn().mockResolvedValue('   '),
+      getFileContent: vi.fn().mockResolvedValue(''),
       postComment: vi.fn(),
     }
     const deps = makeDeps({ githubClient: mockGitHub })

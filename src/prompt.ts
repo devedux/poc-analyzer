@@ -1,4 +1,4 @@
-import type { SpecFile, ChatMessage } from './types'
+import type { SpecFile, ChatMessage, ASTChunk, DiffFile } from './types'
 
 export interface PromptOptions {
   includeInstructions?: boolean
@@ -69,6 +69,69 @@ export function buildChatMessages(diff: string, specs: SpecFile[]): ChatMessage[
   const prompt = buildAnalysisPrompt(diff, specs)
 
   return [{ role: 'user', content: prompt }]
+}
+
+/**
+ * Formatea las líneas del diff de un DiffFile en formato estándar unified diff.
+ * Incluye contexto para que el modelo entienda el entorno del cambio.
+ */
+function formatDiffLines(diffFile: DiffFile): string {
+  const lines: string[] = []
+
+  for (const hunk of diffFile.hunks) {
+    lines.push(`@@ ${diffFile.filename} @@`)
+    for (const line of hunk.lines) {
+      const prefix = line.type === 'added' ? '+' : line.type === 'removed' ? '-' : ' '
+      lines.push(`${prefix}${line.content}`)
+    }
+  }
+
+  return lines.join('\n')
+}
+
+/**
+ * Construye el prompt usando chunks semánticos del AST.
+ * En vez de volcar el diff crudo, le da al LLM:
+ * - Qué componentes React cambiaron
+ * - Qué atributos JSX y test IDs están involucrados
+ * - El diff formateado solo de ese archivo
+ */
+export function buildAnalysisPromptFromAST(chunks: ASTChunk[], specs: SpecFile[]): string {
+  const specsBlock = specs.map((s) => `// ${s.name}\n${s.content}`).join('\n\n---\n\n')
+
+  const changesBlock = chunks
+    .map((chunk) => {
+      const lines: string[] = [`### ${chunk.filename}`]
+
+      if (chunk.summary) lines.push(`**Semántica:** ${chunk.summary}`)
+      if (chunk.testIds.length > 0)
+        lines.push(`**Test IDs involucrados:** \`${chunk.testIds.join('`, `')}\``)
+
+      lines.push('\n```diff')
+      lines.push(formatDiffLines({ filename: chunk.filename, rawDiff: chunk.rawDiff, hunks: chunk.hunks }))
+      lines.push('```')
+
+      return lines.join('\n')
+    })
+    .join('\n\n---\n\n')
+
+  return `Eres un experto en testing. Aquí están los cambios del PR con análisis semántico del código:
+
+<cambios>
+${changesBlock}
+</cambios>
+
+Aquí están los tests E2E del proyecto:
+
+<e2e_tests>
+${specsBlock}
+</e2e_tests>
+
+${DEFAULT_INSTRUCTIONS}`
+}
+
+export function buildChatMessagesFromAST(chunks: ASTChunk[], specs: SpecFile[]): ChatMessage[] {
+  return [{ role: 'user', content: buildAnalysisPromptFromAST(chunks, specs) }]
 }
 
 export function parseLLMResponse(content: string): {

@@ -11,7 +11,7 @@ export function createOllamaClient(config: Config): LLMClient {
         const stream = await ollama.chat({
           model: options?.model ?? config.model,
           messages: messages.map((m) => ({ role: m.role, content: m.content })),
-          stream: options?.stream ?? true,
+          stream: true,
           options: {
             num_predict: options?.maxTokens ?? config.maxTokens,
             temperature: options?.temperature ?? config.temperature,

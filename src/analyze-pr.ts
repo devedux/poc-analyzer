@@ -1,11 +1,13 @@
 import 'dotenv/config'
 import { getConfig, validateConfig, validatePRConfig } from './config'
 import { createSpecsReader } from './specs'
-import { buildChatMessages } from './prompt'
+import { buildChatMessages, buildChatMessagesFromAST } from './prompt'
 import { createOllamaClient } from './llm'
 import { createGitHubClient } from './github'
 import { collectStream } from './analyze'
-import type { PRAnalyzerDependencies } from './types'
+import { parseDiff, isCodeFile } from './diff-parser'
+import { analyzeWithAST } from './ast-analyzer'
+import type { PRAnalyzerDependencies, ASTChunk } from './types'
 import { AnalyzerError } from './error'
 
 const SEPARATOR = '─'.repeat(60)
@@ -34,15 +36,35 @@ export async function runPRAnalysis(
   console.log(`🤖 Modelo: ${config.model}\n`)
 
   console.log('📥 Obteniendo diff del PR desde GitHub...')
-  const diff = await githubClient.getPRDiff(prNumber)
+  const rawDiff = await githubClient.getPRDiff(prNumber)
 
-  if (!diff.trim()) {
+  if (!rawDiff.trim()) {
     console.log('ℹ️  El PR no tiene cambios.')
     return
   }
 
+  console.log('🔬 Analizando AST de archivos modificados...')
+  const diffFiles = parseDiff(rawDiff)
+  const astChunks: ASTChunk[] = []
+
+  for (const diffFile of diffFiles.filter((f) => isCodeFile(f.filename))) {
+    try {
+      const content = await githubClient.getFileContent(
+        diffFile.filename,
+        `refs/pull/${prNumber}/head`
+      )
+      astChunks.push(analyzeWithAST(diffFile, content))
+      console.log(`  ✓ ${diffFile.filename}`)
+    } catch {
+      console.log(`  ⚠️  No se pudo analizar ${diffFile.filename}, usando diff crudo`)
+    }
+  }
+
   const specs = specsReader.readSpecs(config.e2eRepoPath)
-  const messages = buildChatMessages(diff, specs)
+  const messages =
+    astChunks.length > 0
+      ? buildChatMessagesFromAST(astChunks, specs)
+      : buildChatMessages(rawDiff, specs)
 
   console.log('Analizando...\n')
   console.log(SEPARATOR)
