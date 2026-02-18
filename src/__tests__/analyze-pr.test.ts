@@ -71,4 +71,78 @@ describe('runPRAnalysis', () => {
 
     expect(deps.githubClient.getPRDiff).toHaveBeenCalledWith(99)
   })
+
+  it('should call getFileContent for each code file in the diff', async () => {
+    const multiFileDiff = [
+      'diff --git a/app/components/Checkout.tsx b/app/components/Checkout.tsx',
+      'index 000..111 100644',
+      '--- a/app/components/Checkout.tsx',
+      '+++ b/app/components/Checkout.tsx',
+      '@@ -1,3 +1,3 @@',
+      '-const x = 1',
+      '+const x = 2',
+      ' const y = 3',
+      'diff --git a/app/components/Cart.tsx b/app/components/Cart.tsx',
+      'index 000..222 100644',
+      '--- a/app/components/Cart.tsx',
+      '+++ b/app/components/Cart.tsx',
+      '@@ -1,3 +1,3 @@',
+      '-const a = 1',
+      '+const a = 2',
+      ' const b = 3',
+    ].join('\n')
+
+    const mockGitHub: GitHubClient = {
+      getPRDiff: vi.fn().mockResolvedValue(multiFileDiff),
+      getFileContent: vi.fn().mockResolvedValue('export const x = 2'),
+      postComment: vi.fn().mockResolvedValue(undefined),
+    }
+    const deps = makeDeps({ githubClient: mockGitHub })
+
+    await runPRAnalysis(deps, 7)
+
+    expect(mockGitHub.getFileContent).toHaveBeenCalledWith(
+      'app/components/Checkout.tsx',
+      'refs/pull/7/head'
+    )
+    expect(mockGitHub.getFileContent).toHaveBeenCalledWith(
+      'app/components/Cart.tsx',
+      'refs/pull/7/head'
+    )
+    expect(mockGitHub.getFileContent).toHaveBeenCalledTimes(2)
+  })
+
+  it('should still post a comment if one file fails to fetch', async () => {
+    const multiFileDiff = [
+      'diff --git a/app/components/Checkout.tsx b/app/components/Checkout.tsx',
+      'index 000..111 100644',
+      '--- a/app/components/Checkout.tsx',
+      '+++ b/app/components/Checkout.tsx',
+      '@@ -1,3 +1,3 @@',
+      '-const x = 1',
+      '+const x = 2',
+      ' const y = 3',
+      'diff --git a/app/components/Cart.tsx b/app/components/Cart.tsx',
+      'index 000..222 100644',
+      '--- a/app/components/Cart.tsx',
+      '+++ b/app/components/Cart.tsx',
+      '@@ -1,3 +1,3 @@',
+      '-const a = 1',
+      '+const a = 2',
+      ' const b = 3',
+    ].join('\n')
+
+    const mockGitHub: GitHubClient = {
+      getPRDiff: vi.fn().mockResolvedValue(multiFileDiff),
+      getFileContent: vi.fn()
+        .mockResolvedValueOnce('export const x = 2')
+        .mockRejectedValueOnce(new Error('404 Not Found')),
+      postComment: vi.fn().mockResolvedValue(undefined),
+    }
+    const deps = makeDeps({ githubClient: mockGitHub })
+
+    await runPRAnalysis(deps, 8)
+
+    expect(mockGitHub.postComment).toHaveBeenCalledTimes(1)
+  })
 })

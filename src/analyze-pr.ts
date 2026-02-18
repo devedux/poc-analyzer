@@ -46,21 +46,25 @@ export async function runPRAnalysis(
   }
 
   console.log('🔬 Analizando AST de archivos modificados...')
-  const diffFiles = parseDiff(rawDiff)
-  const astChunks: ASTChunk[] = []
+  const diffFiles = parseDiff(rawDiff).filter((f) => isCodeFile(f.filename))
 
-  for (const diffFile of diffFiles.filter((f) => isCodeFile(f.filename))) {
-    try {
-      const content = await githubClient.getFileContent(
-        diffFile.filename,
-        `refs/pull/${prNumber}/head`
-      )
-      astChunks.push(analyzeWithAST(diffFile, content))
-      console.log(`  ✓ ${diffFile.filename}`)
-    } catch {
-      console.log(`  ⚠️  No se pudo analizar ${diffFile.filename}, usando diff crudo`)
-    }
-  }
+  const astChunks = (
+    await Promise.all(
+      diffFiles.map(async (diffFile) => {
+        try {
+          const content = await githubClient.getFileContent(
+            diffFile.filename,
+            `refs/pull/${prNumber}/head`
+          )
+          console.log(`  ✓ ${diffFile.filename}`)
+          return analyzeWithAST(diffFile, content)
+        } catch {
+          console.log(`  ⚠️  No se pudo analizar ${diffFile.filename}, usando diff crudo`)
+          return null
+        }
+      })
+    )
+  ).filter((chunk): chunk is ASTChunk => chunk !== null)
 
   const specs = specsReader.readSpecs(config.e2eRepoPath)
 
