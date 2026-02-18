@@ -1,0 +1,8 @@
+export { main, runAnalysis, createDependencies } from './analyze'
+export { getConfig, validateConfig, CONFIG } from './config'
+export { createGitOperations, hasUncommittedChanges } from './git'
+export { createSpecsReader, filterSpecsByPattern, getSpecFilesCount } from './specs'
+export { buildAnalysisPrompt, buildChatMessages, parseLLMResponse } from './prompt'
+export { createOllamaClient, OllamaClientFactory, MockLLMClient } from './llm'
+export * from './types'
+export * from './error'
