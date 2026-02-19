@@ -90,7 +90,7 @@ export async function runPRAnalysis(
 
   console.log('\n' + SEPARATOR)
 
-  const comment = `## 🤖 Análisis de impacto en tests E2E\n\n${fullResponse}\n\n---\n*Generado por poc-analyzer con ${config.model}*`
+  const comment = `## 🤖 Análisis de impacto en tests E2E\n\n> Basado en análisis semántico del diff (AST + embeddings + BM25)\n\n${fullResponse}\n\n---\n*Generado por poc-analyzer · modelo: \`${config.model}\`*`
 
   console.log('\n💬 Posteando comentario en el PR...')
   await githubClient.postComment(prNumber, comment)

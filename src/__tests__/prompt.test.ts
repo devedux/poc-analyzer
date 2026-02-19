@@ -74,11 +74,67 @@ describe('prompt', () => {
     })
   })
 
-  describe('parseLLMResponse', () => {
-    const sampleResponse = `
-## 📋 Resumen ejecutivo
-Se cambió el selector del botón de login.
+  describe('parseLLMResponse — nuevo formato (#### `...`)', () => {
+    const newFormatResponse = `
+## 📋 ¿Qué cambió?
+Se renombró el selector del botón de pago.
 
+---
+
+## 🔴 Tests que fallarán
+
+#### \`el botón de pago tiene el texto correcto\` — \`checkout.spec.ts\`
+**Por qué falla:** El test usa \`getByTestId('checkout-btn')\` que ya no existe.
+
+---
+
+## 🟡 Tests en riesgo
+
+#### \`el método de pago alternativo es clickeable\` — \`checkout.spec.ts\`
+**Por qué es riesgo:** Podría depender de la misma convención de naming.
+
+---
+
+## ✅ Tests no afectados
+
+- \`muestra el resumen del pedido\` — No interactúa con el botón.
+
+---
+
+## 📊 Resumen
+
+| Categoría | Cantidad |
+|-----------|----------|
+| 🔴 Rotos | 1 |
+| 🟡 Riesgo | 1 |
+| ✅ OK | 1 |
+| **Total** | **3** |
+    `.trim()
+
+    it('should parse broken tests from h4 format', () => {
+      const result = parseLLMResponse(newFormatResponse)
+      expect(result.broken).toContain('el botón de pago tiene el texto correcto')
+    })
+
+    it('should parse risk tests from h4 format', () => {
+      const result = parseLLMResponse(newFormatResponse)
+      expect(result.risk).toContain('el método de pago alternativo es clickeable')
+    })
+
+    it('should parse ok tests from ✅ section with bullet format', () => {
+      const result = parseLLMResponse(newFormatResponse)
+      expect(result.ok).toContain('muestra el resumen del pedido')
+    })
+
+    it('should not mix tests between sections', () => {
+      const result = parseLLMResponse(newFormatResponse)
+      expect(result.broken).not.toContain('muestra el resumen del pedido')
+      expect(result.ok).not.toContain('el botón de pago tiene el texto correcto')
+    })
+  })
+
+  describe('parseLLMResponse — formato legacy (- **...** )', () => {
+    const legacyResponse = `
 ## 🔴 Tests rotos
 - **login should redirect to dashboard** — el selector cambió en la línea 12
 
@@ -89,38 +145,31 @@ Se cambió el selector del botón de login.
 - **home page loads correctly** — no hay cambios en esa ruta
     `.trim()
 
-    it('should parse broken test names', () => {
-      const result = parseLLMResponse(sampleResponse)
-
-      expect(result.broken).toEqual(['login should redirect to dashboard'])
+    it('should still parse broken tests in legacy format', () => {
+      expect(parseLLMResponse(legacyResponse).broken).toEqual(['login should redirect to dashboard'])
     })
 
-    it('should parse risk test names', () => {
-      const result = parseLLMResponse(sampleResponse)
-
-      expect(result.risk).toEqual(['checkout flow completes'])
+    it('should still parse risk tests in legacy format', () => {
+      expect(parseLLMResponse(legacyResponse).risk).toEqual(['checkout flow completes'])
     })
 
-    it('should parse ok test names', () => {
-      const result = parseLLMResponse(sampleResponse)
-
-      expect(result.ok).toEqual(['home page loads correctly'])
+    it('should still parse ok tests with legacy 🟢 section', () => {
+      expect(parseLLMResponse(legacyResponse).ok).toEqual(['home page loads correctly'])
     })
+  })
 
+  describe('parseLLMResponse — edge cases', () => {
     it('should return empty arrays for empty response', () => {
       const result = parseLLMResponse('')
-
       expect(result.broken).toHaveLength(0)
       expect(result.risk).toHaveLength(0)
       expect(result.ok).toHaveLength(0)
     })
 
-    it('should handle response with no tests in a section', () => {
-      const response = `## 🔴 Tests rotos\nNinguno\n## 🟡 Tests en riesgo\n- **risky test** — might break`
-      const result = parseLLMResponse(response)
-
-      expect(result.broken).toHaveLength(0)
-      expect(result.risk).toEqual(['risky test'])
+    it('should return empty broken array when section has no tests', () => {
+      const response = `## 🔴 Tests que fallarán\n*Sin tests rotos.*\n## 🟡 Tests en riesgo\n- **risky test** — might break`
+      expect(parseLLMResponse(response).broken).toHaveLength(0)
+      expect(parseLLMResponse(response).risk).toEqual(['risky test'])
     })
   })
 })

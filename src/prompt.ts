@@ -7,30 +7,59 @@ export interface PromptOptions {
 
 const DEFAULT_INSTRUCTIONS = `Analiza los cambios y responde ÚNICAMENTE con el siguiente formato markdown. No agregues texto fuera de este formato.
 
-## 📋 Resumen ejecutivo
-Una sola oración explicando qué cambió y el impacto general (para producto y management).
+## 📋 ¿Qué cambió?
+Una sola oración resumiendo el cambio (para producto y management).
 
-## 🔴 Tests rotos
-Tests que SEGURAMENTE fallarán por estos cambios. Si no hay ninguno, escribe "Ninguno".
-Para cada test:
-- **nombre del test** — motivo concreto (qué línea del diff lo rompe)
+---
+
+## 🔴 Tests que fallarán
+
+Por cada test que definitivamente fallará usa esta estructura exacta:
+
+#### \`[nombre del test]\` — \`[archivo.spec.ts]\`
+**Por qué falla:** [qué selector, componente o valor cambió y cómo lo rompe]
+
+**Cambio que lo rompe:**
+\`\`\`diff
+[las líneas del diff que causan el fallo — solo las relevantes]
+\`\`\`
+
+**Línea afectada en el test:**
+\`\`\`typescript
+[la línea del test que ya no va a funcionar]
+\`\`\`
+
+Si no hay ninguno, escribe: *Sin tests rotos.*
+
+---
 
 ## 🟡 Tests en riesgo
-Tests que PODRÍAN fallar dependiendo del contexto. Si no hay ninguno, escribe "Ninguno".
-Para cada test:
-- **nombre del test** — por qué es riesgo (qué suposición podría fallar)
 
-## 🟢 Tests no afectados
-Tests que siguen funcionando sin cambios. Si no hay ninguno, escribe "Ninguno".
-Para cada test:
-- **nombre del test** — por qué no se ve afectado
+Por cada test que podría fallar usa esta estructura exacta:
 
-## 📊 Totales
+#### \`[nombre del test]\` — \`[archivo.spec.ts]\`
+**Por qué es riesgo:** [qué suposición podría fallar según el contexto del cambio]
+
+Si no hay ninguno, escribe: *Sin tests en riesgo.*
+
+---
+
+## ✅ Tests no afectados
+
+Por cada test que sigue funcionando:
+- \`[nombre del test]\` — [razón breve]
+
+Si no hay ninguno, escribe: *Sin tests.*
+
+---
+
+## 📊 Resumen
+
 | Categoría | Cantidad |
 |-----------|----------|
 | 🔴 Rotos | N |
 | 🟡 Riesgo | N |
-| 🟢 OK | N |
+| ✅ OK | N |
 | **Total** | **N** |
 
 IMPORTANTE: cada test debe aparecer en UNA SOLA categoría.`
@@ -194,13 +223,19 @@ export function parseLLMResponse(content: string): {
       currentSection = 'broken'
     } else if (trimmed.includes('🟡')) {
       currentSection = 'risk'
-    } else if (trimmed.includes('🟢')) {
+    } else if (trimmed.includes('✅') || trimmed.includes('🟢')) {
       currentSection = 'ok'
-    } else if (currentSection && trimmed.startsWith('- **')) {
-      const match = trimmed.match(/^- \*\*(.+?)\*\*/)
-      if (match) {
+    } else if (currentSection) {
+      // Nuevo formato header: #### `nombre del test` — `archivo.spec.ts`
+      const h4Match = trimmed.match(/^####\s+`(.+?)`/)
+      // Nuevo formato bullet con backticks: - `nombre del test` — razón
+      const backtickBulletMatch = trimmed.match(/^-\s+`(.+?)`/)
+      // Formato legacy: - **nombre del test** — motivo
+      const bulletMatch = trimmed.match(/^-\s+\*\*(.+?)\*\*/)
+      const name = h4Match?.[1] ?? backtickBulletMatch?.[1] ?? bulletMatch?.[1]
+      if (name) {
         const bucket = currentSection === 'broken' ? broken : currentSection === 'risk' ? risk : ok
-        bucket.push(match[1].trim())
+        bucket.push(name.trim())
       }
     }
   }
