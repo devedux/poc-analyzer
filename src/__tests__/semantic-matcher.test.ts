@@ -21,7 +21,14 @@ vi.mock('../embeddings', () => ({
   }),
 }))
 
+// Mock BM25 para que los tests de RRF sean determinísticos
+vi.mock('../bm25-retrieval', () => ({
+  buildBM25Index: vi.fn(() => ({})),
+  searchBM25: vi.fn(() => []),
+}))
+
 import { embedBatch, embed } from '../embeddings'
+import { searchBM25 } from '../bm25-retrieval'
 
 const DIFF_CHUNK: ASTChunk = {
   filename: 'app/components/Checkout.tsx',
@@ -84,15 +91,35 @@ describe('matchChunks', () => {
     expect(matches[0].relevantSpecs).toHaveLength(2)
   })
 
-  it('should rank the most similar spec first', async () => {
+  it('should rank the most similar spec first when BM25 returns nothing', async () => {
     vi.mocked(embedBatch)
       .mockResolvedValueOnce([DIFF_EMBEDDING])
       .mockResolvedValueOnce(SPEC_EMBEDDINGS)
+    vi.mocked(searchBM25).mockReturnValueOnce([])
 
     const matches = await matchChunks([DIFF_CHUNK], SPEC_CHUNKS)
     const topSpec = matches[0].relevantSpecs[0].chunk
 
     expect(topSpec.testName).toBe('el botón de pago tiene el texto correcto')
+  })
+
+  it('should boost a chunk that appears in both dense and BM25 rankings (RRF)', async () => {
+    vi.mocked(embedBatch)
+      .mockResolvedValueOnce([DIFF_EMBEDDING])
+      .mockResolvedValueOnce(SPEC_EMBEDDINGS)
+
+    // BM25 confirma el segundo spec chunk como relevante por keywords
+    vi.mocked(searchBM25).mockReturnValueOnce([
+      { chunk: SPEC_CHUNKS[1], score: 10.0 }, // BM25 boost para SPEC_CHUNKS[1]
+    ])
+
+    const matches = await matchChunks([DIFF_CHUNK], SPEC_CHUNKS, 3)
+
+    // SPEC_CHUNKS[0] lidera en dense, SPEC_CHUNKS[1] lidera en BM25
+    // Con RRF, ambos deben aparecer en el top
+    const topNames = matches[0].relevantSpecs.map((s) => s.chunk.testName)
+    expect(topNames).toContain('el botón de pago tiene el texto correcto')
+    expect(topNames).toContain('muestra el resumen del pedido')
   })
 
   it('should not return more specs than available', async () => {
@@ -115,7 +142,7 @@ describe('matchChunks', () => {
     expect(matches).toHaveLength(0)
   })
 
-  it('should include the similarity score on each result', async () => {
+  it('should include a numeric score on each result', async () => {
     vi.mocked(embedBatch)
       .mockResolvedValueOnce([DIFF_EMBEDDING])
       .mockResolvedValueOnce(SPEC_EMBEDDINGS)
@@ -124,8 +151,7 @@ describe('matchChunks', () => {
 
     for (const { score } of matches[0].relevantSpecs) {
       expect(typeof score).toBe('number')
-      expect(score).toBeGreaterThanOrEqual(-1)
-      expect(score).toBeLessThanOrEqual(1)
+      expect(score).toBeGreaterThan(0)
     }
   })
 })
@@ -139,5 +165,10 @@ describe('matchSingleChunk', () => {
 
     expect(match.diffChunk).toBe(DIFF_CHUNK)
     expect(match.relevantSpecs.length).toBeGreaterThan(0)
+  })
+
+  it('should return empty relevantSpecs when spec chunks is empty', async () => {
+    const match = await matchSingleChunk(DIFF_CHUNK, [])
+    expect(match.relevantSpecs).toHaveLength(0)
   })
 })

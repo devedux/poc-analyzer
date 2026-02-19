@@ -23,6 +23,7 @@
   },
   "dependencies": {
     "dotenv": "17.3.1",
+    "minisearch": "7.2.0",
     "ollama": "0.6.3"
   }
 }
