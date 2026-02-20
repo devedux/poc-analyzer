@@ -1,6 +1,6 @@
 import * as ts from 'typescript'
 import type { ASTChunk, DiffFile, JSXChange } from './types'
-import { getChangedLineRanges, extractRemovedValues } from './diff-parser'
+import { getChangedLineRanges, buildRemovedValueMap } from './diff-parser'
 
 /**
  * Analiza un archivo TypeScript/TSX usando el compilador de TypeScript
@@ -27,6 +27,18 @@ export function analyzeWithAST(diffFile: DiffFile, sourceContent: string): ASTCh
   )
 
   const changedRanges = getChangedLineRanges(diffFile)
+
+  // Lazy-built per-attribute maps: elementTag → FIFO queue of removedValues.
+  // Consumed one-per-element during AST traversal so only actual renames get
+  // a removedValue; purely new elements get undefined.
+  const removedValueMaps = new Map<string, Map<string, string[]>>()
+  function consumeRemovedValue(attrName: string, elementName: string): string | undefined {
+    if (!removedValueMaps.has(attrName)) {
+      removedValueMaps.set(attrName, buildRemovedValueMap(diffFile, attrName))
+    }
+    const queue = removedValueMaps.get(attrName)!.get(elementName)
+    return queue?.shift()
+  }
 
   const components = new Set<string>()
   const functions = new Set<string>()
@@ -100,8 +112,9 @@ export function analyzeWithAST(diffFile: DiffFile, sourceContent: string): ASTCh
         const elementName = parentElement ? getJSXElementName(parentElement) : ''
         const addedValue = getAttributeValue(node.initializer)
 
-        // Extraer valores removidos del diff (el AST solo ve el archivo nuevo)
-        const [removedValue] = extractRemovedValues(diffFile, attrName)
+        // Consume the next removedValue for this element type from the FIFO queue.
+        // Only actual renames get a removedValue; new-only elements get undefined.
+        const removedValue = consumeRemovedValue(attrName, elementName)
 
         if (attrName === 'data-test-id' && addedValue) testIds.add(addedValue)
 

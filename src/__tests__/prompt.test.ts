@@ -199,4 +199,53 @@ Se renombró el selector del botón de pago.
       expect(parseLLMResponseSummary(response).risk).toEqual(['risky test'])
     })
   })
+
+  describe('parseLLMResponse — deduplication (Bug 3)', () => {
+    // The LLM sometimes ignores "IMPORTANTE: cada test debe aparecer en UNA SOLA categoría"
+    // and puts the same test in both broken and risk sections.
+
+    const duplicateResponse = `
+## 🔴 Tests que fallarán
+
+#### \`el método de pago alternativo es clickeable\` — \`checkout.spec.ts\`
+**Por qué falla:** El onClick se movió al button directamente.
+
+---
+
+## 🟡 Tests en riesgo
+
+#### \`el método de pago alternativo es clickeable\` — \`checkout.spec.ts\`
+**Por qué es riesgo:** Podría depender del wrapper.
+
+---
+
+## ✅ Tests no afectados
+
+- \`muestra el resumen del pedido\` — sin cambios
+    `.trim()
+
+    it('returns only one entry when same test appears in broken and risk', () => {
+      const results = parseLLMResponse(duplicateResponse)
+      const matches = results.filter((r) => r.test === 'el método de pago alternativo es clickeable')
+      expect(matches).toHaveLength(1)
+    })
+
+    it('keeps the first occurrence — broken wins over risk', () => {
+      const results = parseLLMResponse(duplicateResponse)
+      const match = results.find((r) => r.test === 'el método de pago alternativo es clickeable')
+      expect(match?.status).toBe('broken')
+    })
+
+    it('non-duplicate tests are unaffected', () => {
+      const results = parseLLMResponse(duplicateResponse)
+      const ok = results.find((r) => r.test === 'muestra el resumen del pedido')
+      expect(ok?.status).toBe('ok')
+    })
+
+    it('total count is correct after dedup', () => {
+      const results = parseLLMResponse(duplicateResponse)
+      // 1 broken (deduped) + 1 ok = 2, not 3
+      expect(results).toHaveLength(2)
+    })
+  })
 })

@@ -205,6 +205,45 @@ describe('persistAnalysisRun', () => {
     )
   })
 
+  it('resolves empty file from matching SpecChunk when LLM omits filename (Bug 2)', async () => {
+    const predictionWithNoFile: typeof mockPredictions[0] = {
+      test: 'should show checkout button', // matches mocked chunkSpecs testName
+      file: '', // LLM omitted the filename
+      line: 0,
+      status: 'broken',
+      reason: 'selector renamed',
+    }
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await persistAnalysisRun(mockRepo as any, makeOpts({ predictions: [predictionWithNoFile] }))
+
+    // The persister should resolve file from the matching SpecChunk (checkout.spec.ts)
+    expect(mockRepo.createTestPrediction).toHaveBeenCalledWith(
+      'prediction-uuid-456',
+      expect.anything(),
+      expect.objectContaining({ file: 'checkout.spec.ts' })
+    )
+  })
+
+  it('keeps file as-is when LLM provides it (no override)', async () => {
+    const predictionWithFile: typeof mockPredictions[0] = {
+      test: 'should show checkout button',
+      file: 'explicit-file.spec.ts', // LLM provided a filename
+      line: 0,
+      status: 'broken',
+      reason: 'selector renamed',
+    }
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await persistAnalysisRun(mockRepo as any, makeOpts({ predictions: [predictionWithFile] }))
+
+    expect(mockRepo.createTestPrediction).toHaveBeenCalledWith(
+      'prediction-uuid-456',
+      expect.anything(),
+      expect.objectContaining({ file: 'explicit-file.spec.ts' })
+    )
+  })
+
   it('handles empty astChunks gracefully', async () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const result = await persistAnalysisRun(mockRepo as any, makeOpts({ astChunks: [] }))

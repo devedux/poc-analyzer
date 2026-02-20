@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { analyzeWithAST } from '../ast-analyzer'
-import { parseDiff } from '../diff-parser'
+import { parseDiff, buildRemovedValueMap } from '../diff-parser'
 import type { DiffFile } from '../types'
 
 // Fuente TSX del componente del POC (nivel fácil: data-test-id renombrado)
@@ -169,6 +169,186 @@ index abc..def 100644
       const chunk = analyzeWithAST(file, CHECKOUT_SOURCE_NEW)
 
       expect(chunk.summary.length).toBeGreaterThan(0)
+    })
+  })
+
+  describe('JSXChange pairing — multi-element bug fix', () => {
+    // Reproduce the real production bug:
+    // Old component had ONE data-test-id="checkout-container" on the root div.
+    // New component has MANY elements each with their own data-test-id.
+    // Bug: every new element was getting removedValue="checkout-container".
+    // Fix: only the first div (same tag) consumes the old value; the rest get undefined.
+    const MULTI_ELEMENT_SOURCE = `
+export function Checkout() {
+  return (
+    <div data-test-id="modular-checkout">
+      <h1 data-test-id="checkout-title">Title</h1>
+      <button data-test-id="pay-btn">Pay</button>
+    </div>
+  )
+}`.trim()
+
+    // diff: 1 removed div (checkout-container), 3 added elements (div + h1 + button)
+    // added lines land on 3, 4, 5 in the new file (matching MULTI_ELEMENT_SOURCE)
+    const MULTI_ELEMENT_DIFF = `diff --git a/Checkout.tsx b/Checkout.tsx
+index abc..def 100644
+--- a/Checkout.tsx
++++ b/Checkout.tsx
+@@ -2,5 +2,7 @@ export function Checkout() {
+   return (
+-    <div data-test-id="checkout-container">
+-      <h1>Title</h1>
++    <div data-test-id="modular-checkout">
++      <h1 data-test-id="checkout-title">Title</h1>
++      <button data-test-id="pay-btn">Pay</button>
+   </div>
+   )
+ }`
+
+    it('only the same-tag element gets removedValue — root div rename correct', () => {
+      const file = parseSingleFile(MULTI_ELEMENT_DIFF)
+      const chunk = analyzeWithAST(file, MULTI_ELEMENT_SOURCE)
+
+      const divChange = chunk.jsxChanges.find(
+        (c) => c.element === 'div' && c.addedValue === 'modular-checkout'
+      )
+      expect(divChange?.removedValue).toBe('checkout-container')
+    })
+
+    it('h1 gets no removedValue — it is a purely new element', () => {
+      const file = parseSingleFile(MULTI_ELEMENT_DIFF)
+      const chunk = analyzeWithAST(file, MULTI_ELEMENT_SOURCE)
+
+      const h1Change = chunk.jsxChanges.find(
+        (c) => c.element === 'h1' && c.addedValue === 'checkout-title'
+      )
+      expect(h1Change).toBeDefined()
+      expect(h1Change?.removedValue).toBeUndefined()
+    })
+
+    it('button gets no removedValue — it is a purely new element', () => {
+      const file = parseSingleFile(MULTI_ELEMENT_DIFF)
+      const chunk = analyzeWithAST(file, MULTI_ELEMENT_SOURCE)
+
+      const btnChange = chunk.jsxChanges.find(
+        (c) => c.element === 'button' && c.addedValue === 'pay-btn'
+      )
+      expect(btnChange).toBeDefined()
+      expect(btnChange?.removedValue).toBeUndefined()
+    })
+
+    it('total jsxChanges count matches number of added elements with data-test-id', () => {
+      const file = parseSingleFile(MULTI_ELEMENT_DIFF)
+      const chunk = analyzeWithAST(file, MULTI_ELEMENT_SOURCE)
+
+      // div(modular-checkout) + h1(checkout-title) + button(pay-btn) = 3
+      const testIdChanges = chunk.jsxChanges.filter((c) => c.attribute === 'data-test-id')
+      expect(testIdChanges).toHaveLength(3)
+    })
+
+    // Test FIFO pairing: 2 old buttons → 2 new buttons with different IDs
+    const TWO_BUTTONS_SOURCE = `
+export function PaymentButtons() {
+  return (
+    <div>
+      <button data-test-id="primary-pay-btn">Pay Now</button>
+      <button data-test-id="alt-pay-btn">Pay Later</button>
+    </div>
+  )
+}`.trim()
+
+    const TWO_BUTTONS_DIFF = `diff --git a/PaymentButtons.tsx b/PaymentButtons.tsx
+index abc..def 100644
+--- a/PaymentButtons.tsx
++++ b/PaymentButtons.tsx
+@@ -3,5 +3,6 @@
+   <div>
+-    <button data-test-id="confirm-btn">Confirm</button>
+-    <button data-test-id="cancel-btn">Cancel</button>
++    <button data-test-id="primary-pay-btn">Pay Now</button>
++    <button data-test-id="alt-pay-btn">Pay Later</button>
+   </div>`
+
+    it('FIFO pairing: first old button maps to first new button', () => {
+      const file = parseSingleFile(TWO_BUTTONS_DIFF)
+      const chunk = analyzeWithAST(file, TWO_BUTTONS_SOURCE)
+
+      const first = chunk.jsxChanges.find((c) => c.addedValue === 'primary-pay-btn')
+      expect(first?.removedValue).toBe('confirm-btn')
+    })
+
+    it('FIFO pairing: second old button maps to second new button', () => {
+      const file = parseSingleFile(TWO_BUTTONS_DIFF)
+      const chunk = analyzeWithAST(file, TWO_BUTTONS_SOURCE)
+
+      const second = chunk.jsxChanges.find((c) => c.addedValue === 'alt-pay-btn')
+      expect(second?.removedValue).toBe('cancel-btn')
+    })
+  })
+
+  describe('buildRemovedValueMap', () => {
+    it('builds a map with one entry per unique element tag', () => {
+      const diff = `diff --git a/X.tsx b/X.tsx
+index a..b 100644
+--- a/X.tsx
++++ b/X.tsx
+@@ -1,3 +1,2 @@
+-<div data-test-id="old-root">
+-<button data-test-id="old-btn">
++<div data-test-id="new-root">`
+
+      const file = parseSingleFile(diff)
+      const map = buildRemovedValueMap(file, 'data-test-id')
+
+      expect(map.get('div')).toEqual(['old-root'])
+      expect(map.get('button')).toEqual(['old-btn'])
+    })
+
+    it('accumulates multiple removed values for the same tag in order', () => {
+      const diff = `diff --git a/X.tsx b/X.tsx
+index a..b 100644
+--- a/X.tsx
++++ b/X.tsx
+@@ -1,3 +1,1 @@
+-<button data-test-id="btn-a">
+-<button data-test-id="btn-b">
++<button data-test-id="btn-new">`
+
+      const file = parseSingleFile(diff)
+      const map = buildRemovedValueMap(file, 'data-test-id')
+
+      expect(map.get('button')).toEqual(['btn-a', 'btn-b'])
+    })
+
+    it('returns empty map when no removed lines have the attribute', () => {
+      const diff = `diff --git a/X.tsx b/X.tsx
+index a..b 100644
+--- a/X.tsx
++++ b/X.tsx
+@@ -1,2 +1,2 @@
+-<div className="old">
++<div className="new">`
+
+      const file = parseSingleFile(diff)
+      const map = buildRemovedValueMap(file, 'data-test-id')
+
+      expect(map.size).toBe(0)
+    })
+
+    it('ignores added lines — only removed lines populate the map', () => {
+      const diff = `diff --git a/X.tsx b/X.tsx
+index a..b 100644
+--- a/X.tsx
++++ b/X.tsx
+@@ -1,2 +1,2 @@
+-<div data-test-id="old">
++<div data-test-id="new">`
+
+      const file = parseSingleFile(diff)
+      const map = buildRemovedValueMap(file, 'data-test-id')
+
+      expect(map.get('div')).toEqual(['old'])
+      expect(map.get('div')).not.toContain('new')
     })
   })
 

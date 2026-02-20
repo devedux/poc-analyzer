@@ -115,6 +115,41 @@ export function extractRemovedValues(file: DiffFile, attribute: string): string[
   return values
 }
 
+/**
+ * Builds a per-element-tag lookup map of removed attribute values from the diff.
+ * Each entry is a FIFO queue — consume one value per added element of the same tag
+ * during AST traversal to correctly pair added/removed attribute values.
+ *
+ * Fixes the bug where a single old value (e.g. "checkout-container") was incorrectly
+ * applied as removedValue to ALL new elements that share the same attribute name.
+ *
+ * Example:
+ *   diff: -<div data-test-id="root">  +<div data-test-id="new-root">  +<h1 data-test-id="title">
+ *   result: Map { 'div' → ['root'] }
+ *   → first div consumes 'root', h1 gets undefined (no old value)
+ */
+export function buildRemovedValueMap(file: DiffFile, attribute: string): Map<string, string[]> {
+  const tagPattern = /<(\w+)/
+  const attrPattern = new RegExp(`${attribute}=["']([^"']+)["']`)
+  const map = new Map<string, string[]>()
+
+  for (const hunk of file.hunks) {
+    for (const line of hunk.lines) {
+      if (line.type === 'removed') {
+        const tagMatch = line.content.match(tagPattern)
+        const attrMatch = line.content.match(attrPattern)
+        if (tagMatch && attrMatch) {
+          const tag = tagMatch[1]
+          if (!map.has(tag)) map.set(tag, [])
+          map.get(tag)!.push(attrMatch[1])
+        }
+      }
+    }
+  }
+
+  return map
+}
+
 export function isCodeFile(filename: string): boolean {
   return CODE_EXTENSIONS.some((ext) => filename.endsWith(ext))
 }

@@ -147,12 +147,17 @@ export async function persistAnalysisRun(
   // 8. Create TestPrediction nodes
   await Promise.all(
     predictions.map(async (result) => {
-      // Try to find the matching SpecChunk id for REFERS_TO relationship
+      // Try to find the matching SpecChunk for REFERS_TO relationship
       const matchingSpec = specChunks.find(
-        (s) => s.testName === result.test || s.filename === result.file
+        (s) => s.testName === result.test || (result.file && s.filename === result.file)
       )
       const specId = matchingSpec ? makeSpecChunkId(matchingSpec.content) : null
-      await repo.createTestPrediction(predictionId, specId, result)
+
+      // Resolve empty file from matched spec — LLMs sometimes omit the filename
+      const resolvedResult =
+        !result.file && matchingSpec ? { ...result, file: matchingSpec.filename } : result
+
+      await repo.createTestPrediction(predictionId, specId, resolvedResult)
     })
   )
 

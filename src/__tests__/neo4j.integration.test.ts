@@ -88,13 +88,28 @@ import {
 } from './fixtures/react-pr-scenarios'
 
 // ─── Configuración de conexión ─────────────────────────────
+// NEO4J_TEST_URI permite apuntar a una BD separada (recomendado para evitar
+// contaminar la BD de producción con fixtures de tests).
+// Si no está seteado, usa NEO4J_URI — los datos de test se limpian via deleteTestNodes,
+// pero SpecChunks sin MATCHED edge pueden quedar huérfanos en la BD.
+// Para aislamiento total: docker run -p 7688:7687 neo4j:5 + NEO4J_TEST_URI=bolt://localhost:7688
 
-const NEO4J_URI = process.env.NEO4J_URI
-const NEO4J_USER = process.env.NEO4J_USER ?? 'neo4j'
-const NEO4J_PASSWORD = process.env.NEO4J_PASSWORD ?? 'password'
+const NEO4J_URI = process.env.NEO4J_TEST_URI ?? process.env.NEO4J_URI
+const NEO4J_USER = process.env.NEO4J_TEST_USER ?? process.env.NEO4J_USER ?? 'neo4j'
+const NEO4J_PASSWORD = process.env.NEO4J_TEST_PASSWORD ?? process.env.NEO4J_PASSWORD ?? 'password'
 
-const TEST_ORG = 'test-devedux-integration'
-const TEST_REPO = 'test-devedux-integration/poc-front-app'
+// ─── Tenant isolation (Google/Stripe pattern) ─────────────
+//
+// Each test run gets a unique org name → all nodes rooted at that org are
+// automatically scoped to this run. Parallel runners (GitHub Actions matrix,
+// local `vitest --pool=threads`) never collide even if they share a DB.
+//
+// Combined with the ephemeral Neo4j sidecar in CI (Anthropic pattern), this
+// gives defense-in-depth: the container is destroyed anyway, but the namespace
+// prevents any accidental cross-contamination during the run itself.
+const TEST_RUN_ID = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+const TEST_ORG = `test-devedux-${TEST_RUN_ID}`
+const TEST_REPO = `test-devedux-${TEST_RUN_ID}/poc-front-app`
 
 // ─── Estado compartido entre suites ───────────────────────
 
@@ -128,10 +143,12 @@ async function waitForNeo4j(
 
 /**
  * Elimina todos los nodos de test (Org → grafo completo) en una sola query.
+ * Luego limpia SpecChunks que quedaron completamente aislados — corresponden a
+ * fixture specs que nunca fueron matched y cuyos ASTChunks ya fueron eliminados.
+ * Los SpecChunks de producción tienen al menos una relación MATCHED o REFERS_TO.
  */
 async function deleteTestNodes(): Promise<void> {
   const orgId = makeOrgId(TEST_ORG)
-  // Primero desconectar y borrar los nodos hoja para evitar violaciones de constraint
   await repo.runCypher(
     `MATCH (o:Org {id: $orgId})
      OPTIONAL MATCH (o)-[:OWNS|HAS_PR|ANALYZED_BY|PRODUCED|CONTAINS|INCLUDES|HAS_JSX_CHANGE|MATCHED|REFERS_TO*1..10]->(n)
@@ -139,6 +156,14 @@ async function deleteTestNodes(): Promise<void> {
      FOREACH (node IN connected | DETACH DELETE node)
      DETACH DELETE o`,
     { orgId }
+  )
+  // Limpiar SpecChunks completamente aislados (sin ninguna relación).
+  // Estos son fixture specs creados por persistAnalysisRun que no llegaron al top-K
+  // del matcher y por tanto nunca recibieron edge MATCHED desde un ASTChunk real.
+  await repo.runCypher(
+    `MATCH (s:SpecChunk)
+     WHERE NOT (s)--()
+     DELETE s`
   )
 }
 

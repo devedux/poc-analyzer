@@ -293,7 +293,16 @@ export function parseLLMResponse(content: string): AnalyzeResult[] {
   }
 
   flushCurrent()
-  return results
+
+  // Deduplicate by test name — the LLM occasionally places the same test in multiple
+  // sections despite instructions. Keep the first occurrence (highest severity wins
+  // since broken precedes risk which precedes ok in the response format).
+  const seen = new Set<string>()
+  return results.filter((r) => {
+    if (seen.has(r.test)) return false
+    seen.add(r.test)
+    return true
+  })
 }
 
 /**
