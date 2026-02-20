@@ -1,7 +1,7 @@
 import 'dotenv/config'
 import { getConfig, validateConfig, validatePRConfig } from './config'
 import { createSpecsReader } from './specs'
-import { buildChatMessages, buildChatMessagesFromMatches } from './prompt'
+import { buildChatMessages, buildChatMessagesFromMatches, parseLLMResponse } from './prompt'
 import { createOllamaClient } from './llm'
 import { createGitHubClient } from './github'
 import { collectStream } from './analyze'
@@ -9,6 +9,7 @@ import { parseDiff, isCodeFile } from './diff-parser'
 import { analyzeWithAST } from './ast-analyzer'
 import { chunkSpecs } from './spec-chunker'
 import { matchChunks } from './semantic-matcher'
+import { createGraphPersister, persistAnalysisRun } from './graph-persister'
 import type { PRAnalyzerDependencies, ASTChunk } from './types'
 import { AnalyzerError } from './error'
 
@@ -37,8 +38,16 @@ export async function runPRAnalysis(
   console.log(`📁 E2E:    ${config.e2eRepoPath}`)
   console.log(`🤖 Modelo: ${config.model}\n`)
 
-  console.log('📥 Obteniendo diff del PR desde GitHub...')
-  const rawDiff = await githubClient.getPRDiff(prNumber)
+  const analysisStartedAt = Date.now()
+
+  // Fetch PR diff + metadata in parallel
+  console.log('📥 Obteniendo diff y metadata del PR desde GitHub...')
+  const [rawDiff, prMetadata] = await Promise.all([
+    githubClient.getPRDiff(prNumber),
+    'getPRMetadata' in githubClient
+      ? (githubClient as import('./types').GitHubClientExtended).getPRMetadata(prNumber)
+      : Promise.resolve(null),
+  ])
 
   if (!rawDiff.trim()) {
     console.log('ℹ️  El PR no tiene cambios.')
@@ -83,10 +92,12 @@ export async function runPRAnalysis(
   console.log('Analizando...\n')
   console.log(SEPARATOR)
 
+  const llmStartedAt = Date.now()
   const stream = llmClient.chat(messages)
   const fullResponse = await collectStream(stream, (chunk) => {
     process.stdout.write(chunk)
   })
+  const llmDurationMs = Date.now() - llmStartedAt
 
   console.log('\n' + SEPARATOR)
 
@@ -96,6 +107,40 @@ export async function runPRAnalysis(
   await githubClient.postComment(prNumber, comment)
 
   console.log(`\n✅ Comentario publicado en PR #${prNumber}\n`)
+
+  // Persistir en Neo4j (opcional — solo si NEO4J_URI está configurado)
+  const graphRepo = createGraphPersister()
+  if (graphRepo && prMetadata) {
+    console.log('📊 Persistiendo análisis en Neo4j...')
+    try {
+      await graphRepo.verifyConnectivity()
+
+      const predictions = parseLLMResponse(fullResponse)
+      const orgName = config.githubOwner ?? 'unknown'
+      const repoFullName = `${orgName}/${config.githubRepo ?? 'unknown'}`
+
+      const { runId } = await persistAnalysisRun(graphRepo, {
+        orgName,
+        repoFullName,
+        prMetadata,
+        astChunks,
+        specFiles: specs,
+        rawMarkdown: fullResponse,
+        predictions,
+        model: config.model,
+        temperature: config.temperature,
+        analysisStartedAt,
+        llmDurationMs,
+      })
+
+      console.log(`  ✓ AnalysisRun ${runId} guardado en el grafo`)
+    } catch (error) {
+      // No fatal — la persistencia en el grafo no debe bloquear el análisis
+      console.warn('  ⚠️  No se pudo persistir en Neo4j:', (error as Error).message)
+    } finally {
+      await graphRepo.close()
+    }
+  }
 }
 
 async function main() {

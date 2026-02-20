@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { buildAnalysisPrompt, buildChatMessages, parseLLMResponse } from '../prompt'
+import { buildAnalysisPrompt, buildChatMessages, parseLLMResponse, parseLLMResponseSummary } from '../prompt'
 import type { SpecFile } from '../types'
 
 describe('prompt', () => {
@@ -112,24 +112,47 @@ Se renombró el selector del botón de pago.
     `.trim()
 
     it('should parse broken tests from h4 format', () => {
-      const result = parseLLMResponse(newFormatResponse)
+      const result = parseLLMResponseSummary(newFormatResponse)
       expect(result.broken).toContain('el botón de pago tiene el texto correcto')
     })
 
     it('should parse risk tests from h4 format', () => {
-      const result = parseLLMResponse(newFormatResponse)
+      const result = parseLLMResponseSummary(newFormatResponse)
       expect(result.risk).toContain('el método de pago alternativo es clickeable')
     })
 
     it('should parse ok tests from ✅ section with bullet format', () => {
-      const result = parseLLMResponse(newFormatResponse)
+      const result = parseLLMResponseSummary(newFormatResponse)
       expect(result.ok).toContain('muestra el resumen del pedido')
     })
 
     it('should not mix tests between sections', () => {
-      const result = parseLLMResponse(newFormatResponse)
+      const result = parseLLMResponseSummary(newFormatResponse)
       expect(result.broken).not.toContain('muestra el resumen del pedido')
       expect(result.ok).not.toContain('el botón de pago tiene el texto correcto')
+    })
+
+    it('parseLLMResponse returns AnalyzeResult[] with structured data', () => {
+      const results = parseLLMResponse(newFormatResponse)
+      const broken = results.find((r) => r.status === 'broken')
+      expect(broken).toBeDefined()
+      expect(broken?.test).toBe('el botón de pago tiene el texto correcto')
+      expect(broken?.file).toBe('checkout.spec.ts')
+      expect(broken?.reason).toContain('checkout-btn')
+    })
+
+    it('parseLLMResponse includes risk AnalyzeResult with file', () => {
+      const results = parseLLMResponse(newFormatResponse)
+      const risk = results.find((r) => r.status === 'risk')
+      expect(risk?.test).toBe('el método de pago alternativo es clickeable')
+      expect(risk?.file).toBe('checkout.spec.ts')
+    })
+
+    it('parseLLMResponse total count matches sections', () => {
+      const results = parseLLMResponse(newFormatResponse)
+      expect(results.filter((r) => r.status === 'broken')).toHaveLength(1)
+      expect(results.filter((r) => r.status === 'risk')).toHaveLength(1)
+      expect(results.filter((r) => r.status === 'ok')).toHaveLength(1)
     })
   })
 
@@ -146,21 +169,25 @@ Se renombró el selector del botón de pago.
     `.trim()
 
     it('should still parse broken tests in legacy format', () => {
-      expect(parseLLMResponse(legacyResponse).broken).toEqual(['login should redirect to dashboard'])
+      expect(parseLLMResponseSummary(legacyResponse).broken).toEqual(['login should redirect to dashboard'])
     })
 
     it('should still parse risk tests in legacy format', () => {
-      expect(parseLLMResponse(legacyResponse).risk).toEqual(['checkout flow completes'])
+      expect(parseLLMResponseSummary(legacyResponse).risk).toEqual(['checkout flow completes'])
     })
 
     it('should still parse ok tests with legacy 🟢 section', () => {
-      expect(parseLLMResponse(legacyResponse).ok).toEqual(['home page loads correctly'])
+      expect(parseLLMResponseSummary(legacyResponse).ok).toEqual(['home page loads correctly'])
     })
   })
 
   describe('parseLLMResponse — edge cases', () => {
-    it('should return empty arrays for empty response', () => {
-      const result = parseLLMResponse('')
+    it('should return empty array for empty response', () => {
+      expect(parseLLMResponse('')).toHaveLength(0)
+    })
+
+    it('parseLLMResponseSummary returns empty arrays for empty response', () => {
+      const result = parseLLMResponseSummary('')
       expect(result.broken).toHaveLength(0)
       expect(result.risk).toHaveLength(0)
       expect(result.ok).toHaveLength(0)
@@ -168,8 +195,8 @@ Se renombró el selector del botón de pago.
 
     it('should return empty broken array when section has no tests', () => {
       const response = `## 🔴 Tests que fallarán\n*Sin tests rotos.*\n## 🟡 Tests en riesgo\n- **risky test** — might break`
-      expect(parseLLMResponse(response).broken).toHaveLength(0)
-      expect(parseLLMResponse(response).risk).toEqual(['risky test'])
+      expect(parseLLMResponseSummary(response).broken).toHaveLength(0)
+      expect(parseLLMResponseSummary(response).risk).toEqual(['risky test'])
     })
   })
 })

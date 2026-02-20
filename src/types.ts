@@ -135,3 +135,38 @@ export interface SemanticMatch {
   diffChunk: ASTChunk
   relevantSpecs: ScoredSpecChunk[]
 }
+
+// ─── Step 4: Graph persistence types ─────────────────────
+
+export interface PRMetadata {
+  prNumber: number
+  title: string
+  description: string
+  author: string
+  branch: string
+  commitSha: string
+  baseSha: string
+  createdAt: string
+  mergedAt: string | null
+}
+
+/**
+ * Score detallado que preserva todas las señales de retrieval
+ * por separado. Nunca tirar datos para training futuro.
+ */
+export interface ScoredSpecChunkDetailed {
+  chunk: SpecChunk
+  cosineScore: number
+  bm25Score: number
+  rrfScore: number
+  rank: number
+}
+
+export interface SemanticMatchDetailed {
+  diffChunk: ASTChunk
+  relevantSpecs: ScoredSpecChunkDetailed[]
+}
+
+export interface GitHubClientExtended extends GitHubClient {
+  getPRMetadata(prNumber: number): Promise<PRMetadata>
+}

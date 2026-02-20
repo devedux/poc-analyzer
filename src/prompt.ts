@@ -1,4 +1,4 @@
-import type { SpecFile, ChatMessage, ASTChunk, DiffFile, SemanticMatch } from './types'
+import type { SpecFile, ChatMessage, ASTChunk, DiffFile, SemanticMatch, AnalyzeResult } from './types'
 
 export interface PromptOptions {
   includeInstructions?: boolean
@@ -205,40 +205,110 @@ ${DEFAULT_INSTRUCTIONS}`
   return [{ role: 'user', content: prompt }]
 }
 
-export function parseLLMResponse(content: string): {
-  broken: string[]
-  risk: string[]
-  ok: string[]
-} {
-  const broken: string[] = []
-  const risk: string[] = []
-  const ok: string[] = []
+export function parseLLMResponse(content: string): AnalyzeResult[] {
+  const results: AnalyzeResult[] = []
 
   let currentSection: 'broken' | 'risk' | 'ok' | null = null
+  let currentTest: string | null = null
+  let currentFile: string | null = null
+  let currentReasonLines: string[] = []
+
+  function flushCurrent() {
+    if (currentTest && currentSection) {
+      results.push({
+        test: currentTest,
+        file: currentFile ?? '',
+        line: 0,
+        status: currentSection,
+        reason: currentReasonLines.join(' ').trim(),
+      })
+    }
+    currentTest = null
+    currentFile = null
+    currentReasonLines = []
+  }
 
   for (const line of content.split('\n')) {
     const trimmed = line.trim()
 
     if (trimmed.includes('🔴')) {
+      flushCurrent()
       currentSection = 'broken'
+      continue
     } else if (trimmed.includes('🟡')) {
+      flushCurrent()
       currentSection = 'risk'
+      continue
     } else if (trimmed.includes('✅') || trimmed.includes('🟢')) {
+      flushCurrent()
       currentSection = 'ok'
-    } else if (currentSection) {
-      // Nuevo formato header: #### `nombre del test` — `archivo.spec.ts`
-      const h4Match = trimmed.match(/^####\s+`(.+?)`/)
-      // Nuevo formato bullet con backticks: - `nombre del test` — razón
-      const backtickBulletMatch = trimmed.match(/^-\s+`(.+?)`/)
-      // Formato legacy: - **nombre del test** — motivo
-      const bulletMatch = trimmed.match(/^-\s+\*\*(.+?)\*\*/)
-      const name = h4Match?.[1] ?? backtickBulletMatch?.[1] ?? bulletMatch?.[1]
-      if (name) {
-        const bucket = currentSection === 'broken' ? broken : currentSection === 'risk' ? risk : ok
-        bucket.push(name.trim())
+      continue
+    } else if (trimmed.startsWith('## 📊') || trimmed.startsWith('## Resumen')) {
+      flushCurrent()
+      currentSection = null
+      continue
+    }
+
+    if (!currentSection) continue
+
+    // Formato h4: #### `nombre del test` — `archivo.spec.ts`
+    const h4Match = trimmed.match(/^####\s+`(.+?)`(?:\s+[—-]\s+`(.+?)`)?/)
+    if (h4Match) {
+      flushCurrent()
+      currentTest = h4Match[1].trim()
+      currentFile = h4Match[2]?.trim() ?? ''
+      currentReasonLines = []
+      continue
+    }
+
+    // Formato bullet para ok: - `nombre del test` — razón
+    const backtickBulletMatch = trimmed.match(/^-\s+`(.+?)`(?:\s+[—-]\s+(.+))?/)
+    if (backtickBulletMatch && currentSection === 'ok') {
+      flushCurrent()
+      currentTest = backtickBulletMatch[1].trim()
+      currentFile = ''
+      currentReasonLines = backtickBulletMatch[2] ? [backtickBulletMatch[2].trim()] : []
+      flushCurrent()
+      continue
+    }
+
+    // Formato legacy: - **nombre del test** — motivo
+    const bulletMatch = trimmed.match(/^-\s+\*\*(.+?)\*\*(?:\s+[—-]\s+(.+))?/)
+    if (bulletMatch) {
+      flushCurrent()
+      currentTest = bulletMatch[1].trim()
+      currentFile = ''
+      currentReasonLines = bulletMatch[2] ? [bulletMatch[2].trim()] : []
+      if (currentSection === 'ok') flushCurrent()
+      continue
+    }
+
+    // Capturar razón para broken/risk
+    if (currentTest && currentSection !== 'ok') {
+      const reasonMatch = trimmed.match(/^\*\*Por qué (?:falla|es riesgo):\*\*\s*(.+)/)
+      if (reasonMatch) {
+        currentReasonLines.push(reasonMatch[1].trim())
       }
     }
   }
 
-  return { broken, risk, ok }
+  flushCurrent()
+  return results
+}
+
+/**
+ * Retorna las listas de nombres de tests en cada categoría.
+ * Mantiene la interfaz simple para quienes solo necesitan los nombres.
+ */
+export function parseLLMResponseSummary(content: string): {
+  broken: string[]
+  risk: string[]
+  ok: string[]
+} {
+  const results = parseLLMResponse(content)
+  return {
+    broken: results.filter((r) => r.status === 'broken').map((r) => r.test),
+    risk: results.filter((r) => r.status === 'risk').map((r) => r.test),
+    ok: results.filter((r) => r.status === 'ok').map((r) => r.test),
+  }
 }

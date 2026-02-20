@@ -6,7 +6,14 @@ import {
   buildSpecContextualText,
 } from './embeddings'
 import { buildBM25Index, searchBM25 } from './bm25-retrieval'
-import type { ASTChunk, SpecChunk, SemanticMatch, ScoredSpecChunk } from './types'
+import type {
+  ASTChunk,
+  SpecChunk,
+  SemanticMatch,
+  ScoredSpecChunk,
+  SemanticMatchDetailed,
+  ScoredSpecChunkDetailed,
+} from './types'
 
 const DEFAULT_TOP_K = 3
 
@@ -25,46 +32,57 @@ const RRF_K = 60
  *
  * Un chunk que aparece en el top de AMBAS listas (semántico + keywords)
  * recibe un score RRF más alto que uno que solo lidera en una.
+ *
+ * Retorna ScoredSpecChunkDetailed preservando las 3 señales por separado.
  */
-function reciprocalRankFusion(
-  denseRanked: ScoredSpecChunk[],
-  bm25Ranked: Array<{ chunk: SpecChunk; score: number }>,
+function reciprocalRankFusionDetailed(
+  denseRanked: Array<{ chunk: SpecChunk; cosineScore: number }>,
+  bm25Ranked: Array<{ chunk: SpecChunk; bm25Score: number }>,
   specChunks: SpecChunk[],
   topK: number
-): ScoredSpecChunk[] {
+): ScoredSpecChunkDetailed[] {
   const rrfScores = new Map<number, number>()
+  const cosineScores = new Map<number, number>()
+  const bm25Scores = new Map<number, number>()
 
-  denseRanked.forEach(({ chunk }, rank) => {
+  denseRanked.forEach(({ chunk, cosineScore }, rank) => {
     const idx = specChunks.indexOf(chunk)
     rrfScores.set(idx, (rrfScores.get(idx) ?? 0) + 1 / (RRF_K + rank + 1))
+    cosineScores.set(idx, cosineScore)
   })
 
-  bm25Ranked.forEach(({ chunk }, rank) => {
+  bm25Ranked.forEach(({ chunk, bm25Score }, rank) => {
     const idx = specChunks.indexOf(chunk)
     rrfScores.set(idx, (rrfScores.get(idx) ?? 0) + 1 / (RRF_K + rank + 1))
+    bm25Scores.set(idx, bm25Score)
   })
 
   return [...rrfScores.entries()]
     .sort((a, b) => b[1] - a[1])
     .slice(0, topK)
-    .map(([idx, score]) => ({ chunk: specChunks[idx], score }))
+    .map(([idx, rrfScore], position) => ({
+      chunk: specChunks[idx],
+      cosineScore: cosineScores.get(idx) ?? 0,
+      bm25Score: bm25Scores.get(idx) ?? 0,
+      rrfScore,
+      rank: position + 1,
+    }))
 }
 
 /**
- * Hybrid Retrieval: Dense Embeddings + BM25, fusionados con RRF.
+ * Hybrid Retrieval con scores detallados: Dense Embeddings + BM25, fusionados con RRF.
+ * Preserva cosine, BM25 y RRF por separado — base para training y feedback loop.
  *
  * Flujo por cada diff chunk:
  * 1. Dense: embedding contextual → cosine similarity vs todos los spec chunks
  * 2. BM25:  query de keywords → coincidencias exactas en testName/content
  * 3. RRF:   fusiona ambos rankings → top-K specs con mayor relevancia combinada
- *
- * Los batch embeddings se generan en paralelo para minimizar latencia.
  */
-export async function matchChunks(
+export async function matchChunksDetailed(
   diffChunks: ASTChunk[],
   specChunks: SpecChunk[],
   topK: number = DEFAULT_TOP_K
-): Promise<SemanticMatch[]> {
+): Promise<SemanticMatchDetailed[]> {
   if (diffChunks.length === 0 || specChunks.length === 0) return []
 
   const bm25Index = buildBM25Index(specChunks)
@@ -77,17 +95,39 @@ export async function matchChunks(
   return diffChunks.map((diffChunk, i) => {
     const query = buildDiffContextualText(diffChunk)
 
-    const denseRanked: ScoredSpecChunk[] = specChunks
-      .map((chunk, j) => ({ chunk, score: cosineSimilarity(diffEmbeddings[i], specEmbeddings[j]) }))
-      .sort((a, b) => b.score - a.score)
+    const denseRanked = specChunks
+      .map((chunk, j) => ({
+        chunk,
+        cosineScore: cosineSimilarity(diffEmbeddings[i], specEmbeddings[j]),
+      }))
+      .sort((a, b) => b.cosineScore - a.cosineScore)
 
-    const bm25Ranked = searchBM25(bm25Index, specChunks, query)
+    const bm25Results = searchBM25(bm25Index, specChunks, query)
+    const bm25Ranked = bm25Results.map((r) => ({ chunk: r.chunk, bm25Score: r.score }))
 
     return {
       diffChunk,
-      relevantSpecs: reciprocalRankFusion(denseRanked, bm25Ranked, specChunks, topK),
+      relevantSpecs: reciprocalRankFusionDetailed(denseRanked, bm25Ranked, specChunks, topK),
     }
   })
+}
+
+/**
+ * Hybrid Retrieval: Dense Embeddings + BM25, fusionados con RRF.
+ * Wrapper de matchChunksDetailed para compatibilidad con el código existente.
+ */
+export async function matchChunks(
+  diffChunks: ASTChunk[],
+  specChunks: SpecChunk[],
+  topK: number = DEFAULT_TOP_K
+): Promise<SemanticMatch[]> {
+  const detailed = await matchChunksDetailed(diffChunks, specChunks, topK)
+  return detailed.map(({ diffChunk, relevantSpecs }) => ({
+    diffChunk,
+    relevantSpecs: relevantSpecs.map(
+      ({ chunk, rrfScore }): ScoredSpecChunk => ({ chunk, score: rrfScore })
+    ),
+  }))
 }
 
 /**
@@ -108,14 +148,22 @@ export async function matchSingleChunk(
     embedBatch(specChunks.map(buildSpecContextualText)),
   ])
 
-  const denseRanked: ScoredSpecChunk[] = specChunks
-    .map((chunk, j) => ({ chunk, score: cosineSimilarity(diffEmbedding, specEmbeddings[j]) }))
-    .sort((a, b) => b.score - a.score)
+  const denseRanked = specChunks
+    .map((chunk, j) => ({
+      chunk,
+      cosineScore: cosineSimilarity(diffEmbedding, specEmbeddings[j]),
+    }))
+    .sort((a, b) => b.cosineScore - a.cosineScore)
 
-  const bm25Ranked = searchBM25(bm25Index, specChunks, query)
+  const bm25Results = searchBM25(bm25Index, specChunks, query)
+  const bm25Ranked = bm25Results.map((r) => ({ chunk: r.chunk, bm25Score: r.score }))
 
-  return {
-    diffChunk,
-    relevantSpecs: reciprocalRankFusion(denseRanked, bm25Ranked, specChunks, topK),
-  }
+  const relevantSpecs = reciprocalRankFusionDetailed(
+    denseRanked,
+    bm25Ranked,
+    specChunks,
+    topK
+  ).map(({ chunk, rrfScore }): ScoredSpecChunk => ({ chunk, score: rrfScore }))
+
+  return { diffChunk, relevantSpecs }
 }
