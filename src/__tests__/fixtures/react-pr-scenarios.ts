@@ -2033,3 +2033,974 @@ export const MONOREPO_PREDICTIONS: AnalyzeResult[] = [
     reason: 'btn-icon is a new element added to shared Button when icon prop is provided',
   },
 ]
+
+// ═══════════════════════════════════════════════════════════
+// PR #8 — Next.js App Router: RSC → Server+Client split + API Route
+// ═══════════════════════════════════════════════════════════
+// Escenario: una página monolítica RSC se divide en tres partes:
+// RSC padre con generateStaticParams/generateMetadata, Client Component
+// interactivo ("use client") con Server Action, y API Route handler
+// GET+POST. Los tests que mockeaban la URL antigua fallan porque la
+// carga pasa a Suspense boundary. "add-to-cart" → "product-add-to-cart-btn".
+// ═══════════════════════════════════════════════════════════
+
+export const PR_RSC_SPLIT: PRMetadata = {
+  prNumber: 108,
+  title: 'feat(app-router): split ProductPage RSC into Server+Client + API Route handler',
+  description:
+    'ProductPage refactored from monolithic RSC to proper Server/Client split. ' +
+    'Server layer: generateStaticParams for SSG, generateMetadata for SEO, Suspense streaming. ' +
+    'Client layer: "use client" ProductInteractions handles cart via Server Action. ' +
+    'New API Route: /api/products/[slug]/route.ts with GET (force-cache) and POST (add-to-cart). ' +
+    'Breaking: "product-detail-loading" removed from RSC (now Suspense fallback). ' +
+    '"add-to-cart" renamed to "product-add-to-cart-btn". Adds "product-cart-feedback" and "product-cart-error".',
+  author: 'hana',
+  branch: 'feat/app-router-rsc-client-split',
+  commitSha: 'h8i9j0k1l2m3h8i9j0k1l2m3h8i9j0k1l2m3h8i9',
+  baseSha: '777777777777777777777777777777777777777',
+  createdAt: '2024-05-10T09:00:00Z',
+  mergedAt: null,
+}
+
+// Archivo 1: apps/web/app/products/[slug]/page.tsx — RSC con generateStaticParams
+export const RSC_PRODUCT_PAGE_CHUNK: ASTChunk = {
+  filename: 'apps/web/app/products/[slug]/page.tsx',
+  rawDiff: [
+    '-// Single monolithic Server Component — no streaming',
+    '-export default async function ProductPage({ params }: { params: { slug: string } }) {',
+    '-  const product = await fetch(`/api/products/${params.slug}`).then(r => r.json())',
+    '-  if (!product) return <div data-test-id="product-not-found">Product not found</div>',
+    '-  return (',
+    '-    <main data-test-id="product-detail">',
+    '-      <div data-test-id="product-detail-loading">Loading...</div>',
+    '-      <h1 data-test-id="product-title">{product.name}</h1>',
+    '-      <p data-test-id="product-price">${product.price}</p>',
+    '-      <button data-test-id="add-to-cart" onClick={() => addToCart(product.id)}>Add to cart</button>',
+    '-    </main>',
+    '-  )',
+    '-}',
+    '+import { Suspense } from "react"',
+    '+import { notFound } from "next/navigation"',
+    '+import type { Metadata } from "next"',
+    '+import { ProductInteractions } from "./ProductInteractions"',
+    '+import { ProductSkeleton } from "@company/ui"',
+    '+',
+    '+export async function generateStaticParams() {',
+    '+  const products = await fetch(`${process.env.API_BASE_URL}/products`, {',
+    '+    next: { revalidate: 3600 },',
+    '+  }).then(r => r.json() as Promise<Array<{ slug: string }>>)',
+    '+  return products.map(p => ({ slug: p.slug }))',
+    '+}',
+    '+',
+    '+export async function generateMetadata(',
+    '+  { params }: { params: { slug: string } }',
+    '+): Promise<Metadata> {',
+    '+  const product = await fetch(`${process.env.API_BASE_URL}/products/${params.slug}`, {',
+    '+    next: { tags: [`product-${params.slug}`] },',
+    '+  }).then(r => r.json() as Promise<{ name: string; description: string }>)',
+    '+  return { title: product.name, description: product.description }',
+    '+}',
+    '+',
+    '+export default async function ProductPage({ params }: { params: { slug: string } }) {',
+    '+  const product = await fetch(`${process.env.API_BASE_URL}/products/${params.slug}`, {',
+    '+    next: { tags: [`product-${params.slug}`] },',
+    '+  }).then(r => r.json() as Promise<{ id: string; name: string; price: number } | null>)',
+    '+  if (!product) notFound()',
+    '+  return (',
+    '+    <main data-test-id="product-detail">',
+    '+      <h1 data-test-id="product-title">{product!.name}</h1>',
+    '+      <p data-test-id="product-price">${product!.price}</p>',
+    '+      <Suspense fallback={<ProductSkeleton data-test-id="product-interactions-skeleton" />}>',
+    '+        <ProductInteractions productId={product!.id} />',
+    '+      </Suspense>',
+    '+    </main>',
+    '+  )',
+    '+}',
+  ].join('\n'),
+  hunks: [hunk(
+    [
+      'export async function generateStaticParams()',
+      'export async function generateMetadata({ params }): Promise<Metadata>',
+      '<Suspense fallback={<ProductSkeleton data-test-id="product-interactions-skeleton" />}>',
+      'if (!product) notFound()',
+    ],
+    [
+      '<div data-test-id="product-detail-loading">Loading...</div>',
+      '<button data-test-id="add-to-cart" onClick={() => addToCart(product.id)}>Add to cart</button>',
+    ]
+  )],
+  components: ['ProductPage', 'ProductInteractions', 'ProductSkeleton'],
+  functions: ['generateStaticParams', 'generateMetadata', 'notFound'],
+  jsxChanges: [
+    { element: 'div', attribute: 'data-test-id', removedValue: 'product-detail-loading' },
+    { element: 'button', attribute: 'data-test-id', removedValue: 'add-to-cart' },
+    { element: 'div', attribute: 'data-test-id', addedValue: 'product-interactions-skeleton' },
+  ],
+  testIds: ['product-detail', 'product-title', 'product-price', 'product-detail-loading', 'add-to-cart', 'product-interactions-skeleton'],
+  summary: 'ProductPage RSC adds generateStaticParams (SSG) and generateMetadata (SEO). Suspense boundary wraps ProductInteractions. "product-detail-loading" and "add-to-cart" removed from RSC — owned by the new client component.',
+}
+
+// Archivo 2: apps/web/app/products/[slug]/ProductInteractions.tsx — "use client"
+export const RSC_PRODUCT_INTERACTIONS_CHUNK: ASTChunk = {
+  filename: 'apps/web/app/products/[slug]/ProductInteractions.tsx',
+  rawDiff: [
+    '+"use client"',
+    '+import { useState, useTransition } from "react"',
+    '+import { addToCartAction } from "@/app/actions/cart"',
+    '+',
+    '+export function ProductInteractions({ productId }: { productId: string }) {',
+    '+  const [isPending, startTransition] = useTransition()',
+    '+  const [feedback, setFeedback] = useState<"idle" | "added" | "error">("idle")',
+    '+',
+    '+  function handleAddToCart() {',
+    '+    startTransition(async () => {',
+    '+      const result = await addToCartAction(productId)',
+    '+      setFeedback(result.ok ? "added" : "error")',
+    '+    })',
+    '+  }',
+    '+',
+    '+  return (',
+    '+    <div data-test-id="product-interactions">',
+    '+      <button data-test-id="product-add-to-cart-btn" disabled={isPending} onClick={handleAddToCart}>',
+    '+        {isPending ? "Adding..." : "Add to cart"}',
+    '+      </button>',
+    '+      {feedback === "added" && (',
+    '+        <div data-test-id="product-cart-feedback" role="status">Added to cart!</div>',
+    '+      )}',
+    '+      {feedback === "error" && (',
+    '+        <div data-test-id="product-cart-error" role="alert">Failed to add. Try again.</div>',
+    '+      )}',
+    '+    </div>',
+    '+  )',
+    '+}',
+  ].join('\n'),
+  hunks: [hunk([
+    '"use client"',
+    'export function ProductInteractions({ productId })',
+    '<button data-test-id="product-add-to-cart-btn" disabled={isPending}>',
+    '<div data-test-id="product-cart-feedback" role="status">',
+    '<div data-test-id="product-cart-error" role="alert">',
+  ])],
+  components: ['ProductInteractions'],
+  functions: ['handleAddToCart', 'useState', 'useTransition', 'addToCartAction'],
+  jsxChanges: [
+    { element: 'button', attribute: 'data-test-id', addedValue: 'product-add-to-cart-btn' },
+    { element: 'div', attribute: 'data-test-id', addedValue: 'product-cart-feedback' },
+    { element: 'div', attribute: 'data-test-id', addedValue: 'product-cart-error' },
+  ],
+  testIds: ['product-interactions', 'product-add-to-cart-btn', 'product-cart-feedback', 'product-cart-error'],
+  summary: 'New "use client" ProductInteractions. Handles cart via Server Action addToCartAction with useTransition. Replaces RSC "add-to-cart" with "product-add-to-cart-btn". Adds "product-cart-feedback" and "product-cart-error" feedback elements.',
+}
+
+// Archivo 3: apps/web/app/api/products/[slug]/route.ts — API Route Handler (no JSX)
+export const RSC_API_ROUTE_CHUNK: ASTChunk = {
+  filename: 'apps/web/app/api/products/[slug]/route.ts',
+  rawDiff: [
+    '+// NEW FILE — App Router API Route Handler',
+    '+import { NextRequest, NextResponse } from "next/server"',
+    '+import { cookies } from "next/headers"',
+    '+',
+    '+export const dynamic = "force-dynamic"',
+    '+',
+    '+export async function GET(_req: NextRequest, { params }: { params: { slug: string } }) {',
+    '+  const res = await fetch(`${process.env.API_BASE_URL}/products/${params.slug}`, {',
+    '+    cache: "force-cache", next: { tags: [`product-${params.slug}`] },',
+    '+  })',
+    '+  if (!res.ok) return NextResponse.json({ error: "Not found" }, { status: 404 })',
+    '+  return NextResponse.json(await res.json())',
+    '+}',
+    '+',
+    '+export async function POST(req: NextRequest, { params }: { params: { slug: string } }) {',
+    '+  const cookieStore = cookies()',
+    '+  const sessionToken = cookieStore.get("session")?.value',
+    '+  if (!sessionToken) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })',
+    '+  const body = await req.json() as { quantity: number }',
+    '+  const res = await fetch(`${process.env.API_BASE_URL}/cart`, {',
+    '+    method: "POST",',
+    '+    headers: { "Content-Type": "application/json", "Authorization": `Bearer ${sessionToken}` },',
+    '+    body: JSON.stringify({ slug: params.slug, quantity: body.quantity }),',
+    '+  })',
+    '+  if (!res.ok) return NextResponse.json({ error: "Failed to add" }, { status: res.status })',
+    '+  return NextResponse.json({ ok: true })',
+    '+}',
+  ].join('\n'),
+  hunks: [hunk([
+    'export async function GET(_req: NextRequest, { params })',
+    'cache: "force-cache", next: { tags: [`product-${params.slug}`] }',
+    'export async function POST(req: NextRequest, { params })',
+    'const cookieStore = cookies()',
+    'if (!sessionToken) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })',
+  ])],
+  components: [],
+  functions: ['GET', 'POST', 'cookies', 'NextResponse.json'],
+  jsxChanges: [],
+  testIds: [],
+  summary: 'New App Router API Route for /api/products/[slug]. GET uses force-cache with Next.js ISR tags. POST validates session cookie and proxies to upstream cart API with Bearer auth. No JSX — pure server handler.',
+}
+
+export const RSC_SPEC_FILES: SpecFile[] = [
+  {
+    name: 'apps/web/product-detail.spec.ts',
+    content: `
+import { test, expect } from '@playwright/test'
+
+test.describe('ProductPage — App Router RSC split', () => {
+  test('should show product-detail-loading (OLD — removed from RSC)', async ({ page }) => {
+    await page.goto('/products/cool-widget')
+    await expect(page.getByTestId('product-detail-loading')).toBeVisible()
+  })
+
+  test('should show product-interactions-skeleton while client hydrates', async ({ page }) => {
+    await page.route('**/api/products/cool-widget', (route) =>
+      route.fulfill({ json: { id: '1', name: 'Cool Widget', price: 49.99 } })
+    )
+    await page.goto('/products/cool-widget')
+    await expect(page.getByTestId('product-interactions-skeleton')).toBeVisible()
+  })
+
+  test('should fail with old add-to-cart selector', async ({ page }) => {
+    await page.goto('/products/cool-widget')
+    await page.getByTestId('add-to-cart').click()
+  })
+
+  test('should add to cart via product-add-to-cart-btn', async ({ page }) => {
+    await page.route('**/api/products/cool-widget', (route) =>
+      route.fulfill({ json: { id: '1', name: 'Cool Widget', price: 49.99 } })
+    )
+    await page.goto('/products/cool-widget')
+    await page.getByTestId('product-add-to-cart-btn').click()
+    await expect(page.getByTestId('product-cart-feedback')).toBeVisible()
+  })
+
+  test('should show product-cart-error when server action fails', async ({ page }) => {
+    await page.route('**/api/cart', (route) => route.abort())
+    await page.goto('/products/cool-widget')
+    await page.getByTestId('product-add-to-cart-btn').click()
+    await expect(page.getByTestId('product-cart-error')).toBeVisible()
+  })
+
+  test('should return 401 when POST cart without session cookie', async ({ request }) => {
+    const res = await request.post('/api/products/cool-widget', { data: { quantity: 1 } })
+    expect(res.status()).toBe(401)
+  })
+})
+    `.trim(),
+  },
+]
+
+export const RSC_PREDICTIONS: AnalyzeResult[] = [
+  {
+    test: 'should show product-detail-loading (OLD — removed from RSC)',
+    file: 'apps/web/product-detail.spec.ts',
+    line: 0,
+    status: 'broken',
+    reason: '"product-detail-loading" removed from RSC ProductPage — loading state now inside Suspense boundary in ProductInteractions client component',
+  },
+  {
+    test: 'should fail with old add-to-cart selector',
+    file: 'apps/web/product-detail.spec.ts',
+    line: 0,
+    status: 'broken',
+    reason: '"add-to-cart" testId removed from RSC, replaced with "product-add-to-cart-btn" in ProductInteractions client component',
+  },
+  {
+    test: 'should show product-interactions-skeleton while client hydrates',
+    file: 'apps/web/product-detail.spec.ts',
+    line: 0,
+    status: 'ok',
+    reason: 'product-interactions-skeleton is the new Suspense fallback — renders server-side before client hydration',
+  },
+  {
+    test: 'should add to cart via product-add-to-cart-btn',
+    file: 'apps/web/product-detail.spec.ts',
+    line: 0,
+    status: 'ok',
+    reason: 'product-add-to-cart-btn is the new selector inside ProductInteractions client component',
+  },
+  {
+    test: 'should show product-cart-error when server action fails',
+    file: 'apps/web/product-detail.spec.ts',
+    line: 0,
+    status: 'risk',
+    reason: 'Server Action addToCartAction goes through Next.js internal transport — page.route() may not intercept it; requires mocking the upstream fetch',
+  },
+  {
+    test: 'should return 401 when POST cart without session cookie',
+    file: 'apps/web/product-detail.spec.ts',
+    line: 0,
+    status: 'ok',
+    reason: 'New POST handler validates cookies() — correctly returns 401 when session cookie absent',
+  },
+]
+
+// ═══════════════════════════════════════════════════════════
+// PR #9 — packages/api-client: v1→v2 endpoint migration + interceptors
+// ═══════════════════════════════════════════════════════════
+// Escenario: packages/api-client centraliza el networking del monorepo.
+// EndpointRegistry migra productos y órdenes de /v1 a /v2.
+// ApiClient gana interceptors de request/response. apps/web y apps/dashboard
+// consumen este paquete — cross-package blast radius: los mocks E2E que
+// usaban "**/v1/products**" ahora no interceptan nada.
+// ═══════════════════════════════════════════════════════════
+
+export const PR_API_CLIENT: PRMetadata = {
+  prNumber: 109,
+  title: 'feat(packages/api-client): v2 endpoint migration + request/response interceptors',
+  description:
+    'EndpointRegistry migrates products and orders from /v1 to /v2. Cart stays at /v1. ' +
+    'ApiClient gains composable interceptor pipeline: useRequestInterceptor (Bearer token + X-Correlation-ID) ' +
+    'and useResponseInterceptor (5xx logging). Adds PUT and DELETE methods. ' +
+    'Breaking: all E2E route mocks using "**/v1/products**" or "**/v1/orders**" will miss requests. ' +
+    'Cross-package blast radius: apps/web and apps/dashboard both affected.',
+  author: 'ivan',
+  branch: 'feat/api-client-v2-interceptors',
+  commitSha: 'i9j0k1l2m3n4i9j0k1l2m3n4i9j0k1l2m3n4i9j0',
+  baseSha: '888888888888888888888888888888888888888',
+  createdAt: '2024-05-20T10:00:00Z',
+  mergedAt: null,
+}
+
+// Archivo 1: packages/api-client/src/EndpointRegistry.ts — v1→v2
+export const ENDPOINT_REGISTRY_CHUNK: ASTChunk = {
+  filename: 'packages/api-client/src/EndpointRegistry.ts',
+  rawDiff: [
+    '-export const endpoints = {',
+    '-  products: {',
+    '-    list:   "/v1/products",',
+    '-    detail: (id: string) => `/v1/products/${id}`,',
+    '-    search: "/v1/products/search",',
+    '-  },',
+    '-  cart:     { get: "/v1/cart", add: "/v1/cart/items", remove: (id: string) => `/v1/cart/items/${id}` },',
+    '-  orders:   { list: "/v1/orders", detail: (id: string) => `/v1/orders/${id}` },',
+    '-}',
+    '+export const API_VERSION = { products: "v2", cart: "v1", orders: "v2" } as const',
+    '+',
+    '+export const endpoints = {',
+    '+  products: {',
+    '+    list:       "/v2/products",',
+    '+    detail:     (id: string) => `/v2/products/${id}`,',
+    '+    search:     "/v2/products/search",',
+    '+    byCategory: (cat: string) => `/v2/products?category=${cat}`,',
+    '+  },',
+    '+  cart:    { get: "/v1/cart", add: "/v1/cart/items", remove: (id: string) => `/v1/cart/items/${id}` },',
+    '+  orders:  { list: "/v2/orders", detail: (id: string) => `/v2/orders/${id}` },',
+    '+} as const',
+  ].join('\n'),
+  hunks: [hunk(
+    [
+      'export const API_VERSION = { products: "v2", cart: "v1", orders: "v2" } as const',
+      'products.list: "/v2/products"',
+      'products.detail: (id) => `/v2/products/${id}`',
+      'products.byCategory: (cat) => `/v2/products?category=${cat}`',
+      'orders: { list: "/v2/orders", detail: (id) => `/v2/orders/${id}` }',
+    ],
+    [
+      'products.list: "/v1/products"',
+      'products.detail: (id) => `/v1/products/${id}`',
+      'orders: { list: "/v1/orders", detail: (id) => `/v1/orders/${id}` }',
+    ]
+  )],
+  components: [],
+  functions: ['endpoints'],
+  jsxChanges: [],
+  testIds: [],
+  summary: 'EndpointRegistry migrates products and orders from /v1 to /v2. Cart endpoints remain at /v1. Adds products.byCategory and API_VERSION const. Breaking for all consumers — cross-package blast radius.',
+}
+
+// Archivo 2: packages/api-client/src/ApiClient.ts — interceptors
+export const API_CLIENT_INTERCEPTORS_CHUNK: ASTChunk = {
+  filename: 'packages/api-client/src/ApiClient.ts',
+  rawDiff: [
+    '-export class ApiClient {',
+    '-  constructor(private baseUrl: string) {}',
+    '-  async get<T>(path: string): Promise<T> {',
+    '-    const res = await fetch(`${this.baseUrl}${path}`)',
+    '-    if (!res.ok) throw new Error(`HTTP ${res.status}`)',
+    '-    return res.json() as Promise<T>',
+    '-  }',
+    '-  async post<T>(path: string, body: unknown): Promise<T> {',
+    '-    const res = await fetch(`${this.baseUrl}${path}`, { method: "POST", body: JSON.stringify(body) })',
+    '-    if (!res.ok) throw new Error(`HTTP ${res.status}`)',
+    '-    return res.json() as Promise<T>',
+    '-  }',
+    '-}',
+    '+type RequestInterceptor = (req: RequestInit & { url: string }) => RequestInit & { url: string }',
+    '+type ResponseInterceptor = (res: Response) => Promise<Response>',
+    '+',
+    '+export class ApiClient {',
+    '+  private requestInterceptors: RequestInterceptor[] = []',
+    '+  private responseInterceptors: ResponseInterceptor[] = []',
+    '+',
+    '+  constructor(private baseUrl: string, private authTokenFn?: () => string | null) {}',
+    '+',
+    '+  useRequestInterceptor(fn: RequestInterceptor): this { this.requestInterceptors.push(fn); return this }',
+    '+  useResponseInterceptor(fn: ResponseInterceptor): this { this.responseInterceptors.push(fn); return this }',
+    '+',
+    '+  private applyRequestInterceptors(init: RequestInit & { url: string }) {',
+    '+    return this.requestInterceptors.reduce((acc, fn) => fn(acc), init)',
+    '+  }',
+    '+  private async applyResponseInterceptors(res: Response) {',
+    '+    let cur = res',
+    '+    for (const fn of this.responseInterceptors) cur = await fn(cur)',
+    '+    return cur',
+    '+  }',
+    '+',
+    '+  private async request<T>(path: string, init: RequestInit = {}): Promise<T> {',
+    '+    const token = this.authTokenFn?.() ?? null',
+    '+    const config = this.applyRequestInterceptors({',
+    '+      ...init, url: `${this.baseUrl}${path}`,',
+    '+      headers: {',
+    '+        "Content-Type": "application/json",',
+    '+        ...(token ? { Authorization: `Bearer ${token}` } : {}),',
+    '+        "X-Correlation-ID": crypto.randomUUID(),',
+    '+        ...(init.headers ?? {}),',
+    '+      },',
+    '+    })',
+    '+    const res = await this.applyResponseInterceptors(await fetch(config.url, config))',
+    '+    if (!res.ok) { const err = await res.json().catch(() => ({})) as { message?: string }; throw new Error(err.message ?? `HTTP ${res.status}`) }',
+    '+    return res.json() as Promise<T>',
+    '+  }',
+    '+',
+    '+  get<T>(path: string) { return this.request<T>(path) }',
+    '+  post<T>(path: string, body: unknown) { return this.request<T>(path, { method: "POST", body: JSON.stringify(body) }) }',
+    '+  put<T>(path: string, body: unknown) { return this.request<T>(path, { method: "PUT", body: JSON.stringify(body) }) }',
+    '+  delete<T>(path: string) { return this.request<T>(path, { method: "DELETE" }) }',
+    '+}',
+  ].join('\n'),
+  hunks: [hunk(
+    [
+      'useRequestInterceptor(fn: RequestInterceptor): this',
+      'useResponseInterceptor(fn: ResponseInterceptor): this',
+      'private applyRequestInterceptors(init)',
+      '"X-Correlation-ID": crypto.randomUUID()',
+      'put<T>(path, body) { return this.request<T>(path, { method: "PUT" }) }',
+      'delete<T>(path) { return this.request<T>(path, { method: "DELETE" }) }',
+    ],
+    [
+      'async get<T>(path: string): Promise<T>',
+      'async post<T>(path: string, body: unknown): Promise<T>',
+    ]
+  )],
+  components: [],
+  functions: ['useRequestInterceptor', 'useResponseInterceptor', 'applyRequestInterceptors', 'applyResponseInterceptors', 'request', 'get', 'post', 'put', 'delete'],
+  jsxChanges: [],
+  testIds: [],
+  summary: 'ApiClient gains composable interceptor pipeline: request interceptor injects Bearer token + X-Correlation-ID, response interceptor normalizes errors. Adds PUT and DELETE methods. authTokenFn injected via constructor.',
+}
+
+// Archivo 3: apps/web/src/lib/apiClientInstance.ts — consumidor de packages/api-client
+export const WEB_API_CLIENT_INSTANCE_CHUNK: ASTChunk = {
+  filename: 'apps/web/src/lib/apiClientInstance.ts',
+  rawDiff: [
+    '-import { ApiClient } from "@company/api-client"',
+    '-export const webApiClient = new ApiClient(process.env.NEXT_PUBLIC_API_BASE_URL ?? "")',
+    '+import { ApiClient } from "@company/api-client"',
+    '+import { endpoints } from "@company/api-client/EndpointRegistry"',
+    '+',
+    '+function getSessionToken(): string | null {',
+    '+  if (typeof document === "undefined") return null',
+    '+  return document.cookie.split("; ").find(r => r.startsWith("session="))?.split("=")[1] ?? null',
+    '+}',
+    '+',
+    '+export const webApiClient = new ApiClient(process.env.NEXT_PUBLIC_API_BASE_URL ?? "", getSessionToken)',
+    '+  .useRequestInterceptor((req) => { console.debug("[api] →", req.url); return req })',
+    '+  .useResponseInterceptor(async (res) => { if (res.status >= 500) console.error("[api] 5xx:", res.status); return res })',
+    '+',
+    '+export { endpoints }',
+  ].join('\n'),
+  hunks: [hunk(
+    [
+      'import { endpoints } from "@company/api-client/EndpointRegistry"',
+      'function getSessionToken(): string | null',
+      '.useRequestInterceptor((req) => { console.debug("[api] →", req.url) })',
+      '.useResponseInterceptor(async (res) => { if (res.status >= 500) console.error(...) })',
+      'export { endpoints }',
+    ],
+    ['export const webApiClient = new ApiClient(process.env.NEXT_PUBLIC_API_BASE_URL ?? "")']
+  )],
+  components: [],
+  functions: ['getSessionToken', 'useRequestInterceptor', 'useResponseInterceptor'],
+  jsxChanges: [],
+  testIds: [],
+  summary: 'apps/web ApiClient instance gains auth token injection via cookie reader and two interceptors: request logger and 5xx error logger. Exports endpoints registry for consumers. Session token read from document.cookie.',
+}
+
+export const API_CLIENT_SPEC_FILES: SpecFile[] = [
+  {
+    name: 'apps/web/product-list.spec.ts',
+    content: `
+import { test, expect } from '@playwright/test'
+
+test.describe('Product list — api-client v2 migration', () => {
+  test('should load products via v1 route mock (OLD — will miss)', async ({ page }) => {
+    await page.route('**/v1/products', (route) =>
+      route.fulfill({ json: [{ id: '1', name: 'Widget A', slug: 'widget-a' }] })
+    )
+    await page.goto('/products')
+    await expect(page.getByTestId('product-list')).toBeVisible()
+  })
+
+  test('should load products via v2 route mock (NEW)', async ({ page }) => {
+    await page.route('**/v2/products', (route) =>
+      route.fulfill({ json: [{ id: '1', name: 'Widget A', slug: 'widget-a' }] })
+    )
+    await page.goto('/products')
+    await expect(page.getByTestId('product-list')).toBeVisible()
+  })
+
+  test('should send X-Correlation-ID header with every request', async ({ page }) => {
+    const headers: Record<string, string> = {}
+    await page.route('**/v2/products', (route) => {
+      Object.assign(headers, route.request().headers())
+      route.fulfill({ json: [] })
+    })
+    await page.goto('/products')
+    await expect.poll(() => headers['x-correlation-id']).toBeTruthy()
+  })
+
+  test('should send Authorization header when session cookie present', async ({ page }) => {
+    await page.context().addCookies([{ name: 'session', value: 'test-token', url: 'http://localhost:3000' }])
+    const headers: Record<string, string> = {}
+    await page.route('**/v2/products', (route) => {
+      Object.assign(headers, route.request().headers())
+      route.fulfill({ json: [] })
+    })
+    await page.goto('/products')
+    await expect.poll(() => headers['authorization']).toContain('Bearer test-token')
+  })
+})
+    `.trim(),
+  },
+  {
+    name: 'apps/dashboard/orders-list.spec.ts',
+    content: `
+import { test, expect } from '@playwright/test'
+
+test.describe('Dashboard orders — api-client v2 blast radius', () => {
+  test.use({ storageState: 'playwright/.auth/user.json' })
+
+  test('should load orders via v1 route mock (OLD — will miss after migration)', async ({ page }) => {
+    await page.route('**/v1/orders', (route) =>
+      route.fulfill({ json: [{ id: 'o1', status: 'pending' }] })
+    )
+    await page.goto('/dashboard/orders')
+    await expect(page.getByTestId('orders-list')).toBeVisible()
+  })
+
+  test('should load orders via v2 route mock (NEW)', async ({ page }) => {
+    await page.route('**/v2/orders', (route) =>
+      route.fulfill({ json: [{ id: 'o1', status: 'pending' }] })
+    )
+    await page.goto('/dashboard/orders')
+    await expect(page.getByTestId('orders-list')).toBeVisible()
+  })
+})
+    `.trim(),
+  },
+]
+
+export const API_CLIENT_PREDICTIONS: AnalyzeResult[] = [
+  {
+    test: 'should load products via v1 route mock (OLD — will miss)',
+    file: 'apps/web/product-list.spec.ts',
+    line: 0,
+    status: 'broken',
+    reason: 'EndpointRegistry changed products.list from "/v1/products" to "/v2/products" — page.route("**/v1/products") never matches; real request hits /v2/products',
+  },
+  {
+    test: 'should load orders via v1 route mock (OLD — will miss after migration)',
+    file: 'apps/dashboard/orders-list.spec.ts',
+    line: 0,
+    status: 'broken',
+    reason: 'Cross-package blast radius: EndpointRegistry changed orders from /v1 to /v2 — apps/dashboard affected with no code changes in that app',
+  },
+  {
+    test: 'should load products via v2 route mock (NEW)',
+    file: 'apps/web/product-list.spec.ts',
+    line: 0,
+    status: 'ok',
+    reason: '"**/v2/products" is the correct new route pattern after EndpointRegistry migration',
+  },
+  {
+    test: 'should send X-Correlation-ID header with every request',
+    file: 'apps/web/product-list.spec.ts',
+    line: 0,
+    status: 'ok',
+    reason: 'ApiClient now injects X-Correlation-ID via request interceptor on every call',
+  },
+  {
+    test: 'should send Authorization header when session cookie present',
+    file: 'apps/web/product-list.spec.ts',
+    line: 0,
+    status: 'risk',
+    reason: 'getSessionToken reads document.cookie — addCookies must be called before page navigation; timing-dependent',
+  },
+  {
+    test: 'should load orders via v2 route mock (NEW)',
+    file: 'apps/dashboard/orders-list.spec.ts',
+    line: 0,
+    status: 'ok',
+    reason: '"**/v2/orders" correctly matches the new EndpointRegistry orders.list path',
+  },
+]
+
+// ═══════════════════════════════════════════════════════════
+// PR #10 — Next.js middleware expanded + Server Actions + packages/auth
+// ═══════════════════════════════════════════════════════════
+// Escenario: packages/auth centraliza la validación de sesión.
+// El middleware Next.js expande su matcher para proteger nuevas rutas
+// (/dashboard/settings, /checkout/:path*, /api/admin/:path*).
+// Login/logout se migran a Server Actions ("use server"). Los tests que
+// navegaban a /dashboard/settings sin auth antes pasaban (no estaba
+// protegido) y ahora reciben redirect — breakage sin cambio de UI selector.
+// ═══════════════════════════════════════════════════════════
+
+export const PR_AUTH_MIDDLEWARE: PRMetadata = {
+  prNumber: 110,
+  title: 'feat(auth): packages/auth + expand middleware matcher + Server Actions login/logout',
+  description:
+    'New packages/auth: validateSession, loginAction, logoutAction with "use server". ' +
+    'middleware.ts matcher adds /dashboard/settings, /checkout/:path*, /api/admin/:path*. ' +
+    'LoginForm migrates from REST fetch to Server Action via useFormState. ' +
+    'Breaking: "login-submit-btn"→"auth-login-submit-btn", "login-error"→"auth-login-error". ' +
+    'Behavioral break: /dashboard/settings now requires auth — E2E tests that visited it unauthenticated break.',
+  author: 'julia',
+  branch: 'feat/auth-middleware-server-actions',
+  commitSha: 'j0k1l2m3n4o5j0k1l2m3n4o5j0k1l2m3n4o5j0k1',
+  baseSha: '999999999999999999999999999999999999999',
+  createdAt: '2024-06-01T08:00:00Z',
+  mergedAt: null,
+}
+
+// Archivo 1: apps/web/middleware.ts — matcher expandido
+export const MIDDLEWARE_CHUNK: ASTChunk = {
+  filename: 'apps/web/middleware.ts',
+  rawDiff: [
+    '-import { NextResponse } from "next/server"',
+    '-import type { NextRequest } from "next/server"',
+    '-export function middleware(req: NextRequest) {',
+    '-  const token = req.cookies.get("session")?.value',
+    '-  if (!token) return NextResponse.redirect(new URL("/login", req.url))',
+    '-  return NextResponse.next()',
+    '-}',
+    '-export const config = { matcher: ["/dashboard/:path*", "/profile/:path*"] }',
+    '+import { NextResponse } from "next/server"',
+    '+import type { NextRequest } from "next/server"',
+    '+import { validateSession } from "@company/auth"',
+    '+',
+    '+export async function middleware(req: NextRequest) {',
+    '+  const token = req.cookies.get("session")?.value',
+    '+  if (!token) {',
+    '+    const url = new URL("/login", req.url)',
+    '+    url.searchParams.set("redirect", req.nextUrl.pathname)',
+    '+    return NextResponse.redirect(url)',
+    '+  }',
+    '+  const session = await validateSession(token)',
+    '+  if (!session.valid) {',
+    '+    const url = new URL("/login", req.url)',
+    '+    url.searchParams.set("redirect", req.nextUrl.pathname)',
+    '+    url.searchParams.set("reason", "session_expired")',
+    '+    return NextResponse.redirect(url)',
+    '+  }',
+    '+  const res = NextResponse.next()',
+    '+  res.headers.set("X-Session-User", session.userId)',
+    '+  return res',
+    '+}',
+    '+export const config = {',
+    '+  matcher: [',
+    '+    "/dashboard/:path*",',
+    '+    "/profile/:path*",',
+    '+    "/dashboard/settings",   // NEW',
+    '+    "/checkout/:path*",      // NEW',
+    '+    "/api/admin/:path*",     // NEW',
+    '+  ],',
+    '+}',
+  ].join('\n'),
+  hunks: [hunk(
+    [
+      'import { validateSession } from "@company/auth"',
+      'export async function middleware(req: NextRequest)',
+      'url.searchParams.set("redirect", req.nextUrl.pathname)',
+      'const session = await validateSession(token)',
+      'if (!session.valid) { url.searchParams.set("reason", "session_expired") }',
+      'res.headers.set("X-Session-User", session.userId)',
+      '"/dashboard/settings",   // NEW',
+      '"/checkout/:path*",      // NEW',
+      '"/api/admin/:path*",     // NEW',
+    ],
+    [
+      'export function middleware(req: NextRequest)',
+      'if (!token) return NextResponse.redirect(new URL("/login", req.url))',
+      'matcher: ["/dashboard/:path*", "/profile/:path*"]',
+    ]
+  )],
+  components: [],
+  functions: ['middleware', 'validateSession', 'NextResponse.redirect', 'NextResponse.next'],
+  jsxChanges: [],
+  testIds: [],
+  summary: 'Middleware expanded: validates session via packages/auth validateSession. Matcher adds /dashboard/settings, /checkout/:path*, /api/admin/:path*. Redirect carries "redirect" and "reason" query params. X-Session-User header forwarded.',
+}
+
+// Archivo 2: packages/auth/src/index.ts — Server Actions ("use server")
+export const AUTH_PKG_CHUNK: ASTChunk = {
+  filename: 'packages/auth/src/index.ts',
+  rawDiff: [
+    '+"use server"',
+    '+import { cookies, headers } from "next/headers"',
+    '+import { redirect } from "next/navigation"',
+    '+',
+    '+export interface Session { valid: boolean; userId: string; role: "admin" | "user" | "guest"; expiresAt: number }',
+    '+',
+    '+export async function validateSession(token: string): Promise<Session> {',
+    '+  const res = await fetch(`${process.env.AUTH_SERVICE_URL}/validate`, {',
+    '+    method: "POST", body: JSON.stringify({ token }), cache: "no-store",',
+    '+  })',
+    '+  if (!res.ok) return { valid: false, userId: "", role: "guest", expiresAt: 0 }',
+    '+  return res.json() as Promise<Session>',
+    '+}',
+    '+',
+    '+export async function loginAction(formData: FormData): Promise<void> {',
+    '+  const res = await fetch(`${process.env.AUTH_SERVICE_URL}/login`, {',
+    '+    method: "POST",',
+    '+    body: JSON.stringify({ email: formData.get("email"), password: formData.get("password") }),',
+    '+    cache: "no-store",',
+    '+  })',
+    '+  if (!res.ok) throw new Error("Invalid credentials")',
+    '+  const { token, expiresAt } = await res.json() as { token: string; expiresAt: number }',
+    '+  cookies().set("session", token, { httpOnly: true, secure: true, sameSite: "lax", expires: new Date(expiresAt) })',
+    '+  redirect(headers().get("x-redirect") ?? "/dashboard")',
+    '+}',
+    '+',
+    '+export async function logoutAction(): Promise<void> {',
+    '+  const tok = cookies().get("session")?.value',
+    '+  if (tok) await fetch(`${process.env.AUTH_SERVICE_URL}/logout`, { method: "POST", body: JSON.stringify({ token: tok }), cache: "no-store" }).catch(() => void 0)',
+    '+  cookies().delete("session")',
+    '+  redirect("/login")',
+    '+}',
+  ].join('\n'),
+  hunks: [hunk([
+    '"use server"',
+    'export async function validateSession(token: string): Promise<Session>',
+    'export async function loginAction(formData: FormData): Promise<void>',
+    'cookies().set("session", token, { httpOnly: true, secure: true, sameSite: "lax" })',
+    'redirect(headers().get("x-redirect") ?? "/dashboard")',
+    'export async function logoutAction(): Promise<void>',
+    'cookies().delete("session")',
+  ])],
+  components: [],
+  functions: ['validateSession', 'loginAction', 'logoutAction', 'cookies', 'headers', 'redirect'],
+  jsxChanges: [],
+  testIds: [],
+  summary: 'New packages/auth with "use server". validateSession calls AUTH_SERVICE_URL. loginAction uses cookies() + redirect() instead of REST endpoint. logoutAction clears session and redirects. No JSX — pure server logic.',
+}
+
+// Archivo 3: apps/web/app/login/LoginForm.tsx — migra a Server Action + useFormState
+export const LOGIN_FORM_CHUNK: ASTChunk = {
+  filename: 'apps/web/app/login/LoginForm.tsx',
+  rawDiff: [
+    '-"use client"',
+    '-import { useState } from "react"',
+    '-export function LoginForm() {',
+    '-  const [error, setError] = useState<string | null>(null)',
+    '-  const [loading, setLoading] = useState(false)',
+    '-  async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {',
+    '-    e.preventDefault(); setLoading(true)',
+    '-    try { const res = await fetch("/api/auth/login", { method: "POST", body: new FormData(e.currentTarget) })',
+    '-      if (!res.ok) setError("Invalid credentials")',
+    '-    } catch { setError("Network error") } finally { setLoading(false) }',
+    '-  }',
+    '-  return (',
+    '-    <form data-test-id="login-form" onSubmit={handleSubmit}>',
+    '-      <input data-test-id="login-email-input" name="email" type="email" />',
+    '-      <input data-test-id="login-password-input" name="password" type="password" />',
+    '-      {error && <div data-test-id="login-error">{error}</div>}',
+    '-      <button data-test-id="login-submit-btn" type="submit" disabled={loading}>Sign in</button>',
+    '-    </form>',
+    '-  )',
+    '-}',
+    '+"use client"',
+    '+import { useFormState, useFormStatus } from "react-dom"',
+    '+import { loginAction } from "@company/auth"',
+    '+',
+    '+function SubmitButton() {',
+    '+  const { pending } = useFormStatus()',
+    '+  return (',
+    '+    <button data-test-id="auth-login-submit-btn" type="submit" disabled={pending} aria-busy={pending}>',
+    '+      {pending ? "Signing in..." : "Sign in"}',
+    '+    </button>',
+    '+  )',
+    '+}',
+    '+',
+    '+export function LoginForm() {',
+    '+  const [state, formAction] = useFormState(loginAction, null)',
+    '+  return (',
+    '+    <form data-test-id="login-form" action={formAction}>',
+    '+      <input data-test-id="login-email-input" name="email" type="email" required />',
+    '+      <input data-test-id="login-password-input" name="password" type="password" required />',
+    '+      {state?.error && <div data-test-id="auth-login-error" role="alert">{state.error}</div>}',
+    '+      <div data-test-id="auth-session-banner" aria-live="polite" />',
+    '+      <SubmitButton />',
+    '+    </form>',
+    '+  )',
+    '+}',
+  ].join('\n'),
+  hunks: [hunk(
+    [
+      'import { useFormState, useFormStatus } from "react-dom"',
+      'import { loginAction } from "@company/auth"',
+      'function SubmitButton() { const { pending } = useFormStatus() }',
+      '<button data-test-id="auth-login-submit-btn" type="submit" disabled={pending}>',
+      '<div data-test-id="auth-login-error" role="alert">',
+      '<div data-test-id="auth-session-banner" aria-live="polite" />',
+      'const [state, formAction] = useFormState(loginAction, null)',
+    ],
+    [
+      'async function handleSubmit(e: React.FormEvent<HTMLFormElement>)',
+      'await fetch("/api/auth/login", { method: "POST" })',
+      '<button data-test-id="login-submit-btn" type="submit" disabled={loading}>',
+      '<div data-test-id="login-error">',
+    ]
+  )],
+  components: ['LoginForm', 'SubmitButton'],
+  functions: ['loginAction', 'useFormState', 'useFormStatus'],
+  jsxChanges: [
+    { element: 'button', attribute: 'data-test-id', addedValue: 'auth-login-submit-btn', removedValue: 'login-submit-btn' },
+    { element: 'div', attribute: 'data-test-id', addedValue: 'auth-login-error', removedValue: 'login-error' },
+    { element: 'div', attribute: 'data-test-id', addedValue: 'auth-session-banner' },
+  ],
+  testIds: ['auth-login-submit-btn', 'auth-login-error', 'auth-session-banner', 'login-submit-btn', 'login-error', 'login-form', 'login-email-input', 'login-password-input'],
+  summary: 'LoginForm migrated from REST fetch to Server Action loginAction via useFormState. "login-submit-btn"→"auth-login-submit-btn". "login-error"→"auth-login-error". Adds "auth-session-banner" aria-live region. SubmitButton uses useFormStatus for pending state.',
+}
+
+export const AUTH_MIDDLEWARE_SPEC_FILES: SpecFile[] = [
+  {
+    name: 'apps/web/auth-login.spec.ts',
+    content: `
+import { test, expect } from '@playwright/test'
+
+test.describe('Login — Server Action migration', () => {
+  test('should sign in via login-submit-btn (OLD selector)', async ({ page }) => {
+    await page.goto('/login')
+    await page.getByTestId('login-email-input').fill('alice@test.com')
+    await page.getByTestId('login-password-input').fill('correct-password')
+    await page.getByTestId('login-submit-btn').click()
+    await expect(page).toHaveURL('/dashboard')
+  })
+
+  test('should sign in via auth-login-submit-btn (NEW selector)', async ({ page }) => {
+    await page.goto('/login')
+    await page.getByTestId('login-email-input').fill('alice@test.com')
+    await page.getByTestId('login-password-input').fill('correct-password')
+    await page.getByTestId('auth-login-submit-btn').click()
+    await expect(page).toHaveURL('/dashboard')
+  })
+
+  test('should show auth-login-error on bad credentials', async ({ page }) => {
+    await page.goto('/login')
+    await page.getByTestId('login-email-input').fill('bad@test.com')
+    await page.getByTestId('login-password-input').fill('wrong')
+    await page.getByTestId('auth-login-submit-btn').click()
+    await expect(page.getByTestId('auth-login-error')).toBeVisible()
+  })
+
+  test('should show login-error (OLD selector — renamed)', async ({ page }) => {
+    await page.goto('/login')
+    await page.getByTestId('login-email-input').fill('bad@test.com')
+    await page.getByTestId('login-password-input').fill('wrong')
+    await page.getByTestId('auth-login-submit-btn').click()
+    await expect(page.getByTestId('login-error')).toBeVisible()
+  })
+
+  test('should show auth-session-banner when redirected with reason=session_expired', async ({ page }) => {
+    await page.goto('/login?reason=session_expired')
+    await expect(page.getByTestId('auth-session-banner')).toBeVisible()
+  })
+})
+    `.trim(),
+  },
+  {
+    name: 'apps/web/middleware-routes.spec.ts',
+    content: `
+import { test, expect } from '@playwright/test'
+
+test.describe('Middleware — expanded route protection', () => {
+  test('should access /dashboard/settings without auth (before matcher expansion)', async ({ page }) => {
+    await page.goto('/dashboard/settings')
+    await expect(page).toHaveURL('/dashboard/settings')
+    await expect(page.getByTestId('settings-panel')).toBeVisible()
+  })
+
+  test('should redirect /dashboard/settings to /login when unauthenticated', async ({ page }) => {
+    await page.goto('/dashboard/settings')
+    await expect(page).toHaveURL(/\/login/)
+    await expect(page.url()).toContain('redirect=%2Fdashboard%2Fsettings')
+  })
+
+  test('should redirect /checkout to /login when session expired', async ({ page }) => {
+    await page.context().addCookies([{ name: 'session', value: 'expired-token', url: 'http://localhost:3000' }])
+    await page.goto('/checkout')
+    await expect(page).toHaveURL(/\/login/)
+    await expect(page.url()).toContain('reason=session_expired')
+  })
+
+  test('should allow /dashboard/settings with valid session', async ({ page }) => {
+    test.use({ storageState: 'playwright/.auth/user.json' })
+    await page.goto('/dashboard/settings')
+    await expect(page).toHaveURL('/dashboard/settings')
+  })
+})
+    `.trim(),
+  },
+]
+
+export const AUTH_MIDDLEWARE_PREDICTIONS: AnalyzeResult[] = [
+  {
+    test: 'should sign in via login-submit-btn (OLD selector)',
+    file: 'apps/web/auth-login.spec.ts',
+    line: 0,
+    status: 'broken',
+    reason: '"login-submit-btn" renamed to "auth-login-submit-btn" in LoginForm Server Action migration',
+  },
+  {
+    test: 'should show login-error (OLD selector — renamed)',
+    file: 'apps/web/auth-login.spec.ts',
+    line: 0,
+    status: 'broken',
+    reason: '"login-error" renamed to "auth-login-error" in LoginForm redesign',
+  },
+  {
+    test: 'should access /dashboard/settings without auth (before matcher expansion)',
+    file: 'apps/web/middleware-routes.spec.ts',
+    line: 0,
+    status: 'broken',
+    reason: 'Middleware matcher now includes "/dashboard/settings" — unauthenticated requests redirect to /login; no selector change involved, purely behavioral breakage from middleware expansion',
+  },
+  {
+    test: 'should sign in via auth-login-submit-btn (NEW selector)',
+    file: 'apps/web/auth-login.spec.ts',
+    line: 0,
+    status: 'ok',
+    reason: '"auth-login-submit-btn" is the new correct selector using useFormStatus pending state',
+  },
+  {
+    test: 'should redirect /dashboard/settings to /login when unauthenticated',
+    file: 'apps/web/middleware-routes.spec.ts',
+    line: 0,
+    status: 'ok',
+    reason: 'Middleware now guards /dashboard/settings — redirect with "redirect" param is the expected new behavior',
+  },
+  {
+    test: 'should show auth-session-banner when redirected with reason=session_expired',
+    file: 'apps/web/auth-login.spec.ts',
+    line: 0,
+    status: 'ok',
+    reason: '"auth-session-banner" is a new aria-live element in LoginForm — shown when reason=session_expired param present',
+  },
+  {
+    test: 'should redirect /checkout to /login when session expired',
+    file: 'apps/web/middleware-routes.spec.ts',
+    line: 0,
+    status: 'risk',
+    reason: 'validateSession calls external AUTH_SERVICE_URL from middleware — E2E environment must have a running auth service or mock; unexpected 500 instead of redirect in unconfigured environments',
+  },
+]

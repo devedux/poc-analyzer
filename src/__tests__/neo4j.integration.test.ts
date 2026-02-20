@@ -67,6 +67,24 @@ import {
   ADMIN_ORDERS_CHUNK,
   MONOREPO_SPEC_FILES,
   MONOREPO_PREDICTIONS,
+  PR_RSC_SPLIT,
+  RSC_PRODUCT_PAGE_CHUNK,
+  RSC_PRODUCT_INTERACTIONS_CHUNK,
+  RSC_API_ROUTE_CHUNK,
+  RSC_SPEC_FILES,
+  RSC_PREDICTIONS,
+  PR_API_CLIENT,
+  ENDPOINT_REGISTRY_CHUNK,
+  API_CLIENT_INTERCEPTORS_CHUNK,
+  WEB_API_CLIENT_INSTANCE_CHUNK,
+  API_CLIENT_SPEC_FILES,
+  API_CLIENT_PREDICTIONS,
+  PR_AUTH_MIDDLEWARE,
+  MIDDLEWARE_CHUNK,
+  AUTH_PKG_CHUNK,
+  LOGIN_FORM_CHUNK,
+  AUTH_MIDDLEWARE_SPEC_FILES,
+  AUTH_MIDDLEWARE_PREDICTIONS,
 } from './fixtures/react-pr-scenarios'
 
 // ─── Configuración de conexión ─────────────────────────────
@@ -1331,5 +1349,435 @@ describe('Integration — Cross-library graph queries (PRs 104-107)', () => {
     const total = records[0].get('total').toNumber()
     // No puede haber duplicados si UNIQUE constraint está activo
     expect(uniqueIds).toBe(total)
+  })
+})
+
+// ═══════════════════════════════════════════════════════════
+// Suite 11 — PR #108: Next.js App Router RSC split
+// ═══════════════════════════════════════════════════════════
+
+describe('Integration — PR #108: Next.js App Router RSC + Client split + API Route', () => {
+  let runId = ''
+
+  beforeAll(async () => {
+    if (!isConnected) return
+    const result = await persistAnalysisRun(repo, {
+      orgName: TEST_ORG,
+      repoFullName: TEST_REPO,
+      prMetadata: PR_RSC_SPLIT,
+      astChunks: [RSC_PRODUCT_PAGE_CHUNK, RSC_PRODUCT_INTERACTIONS_CHUNK, RSC_API_ROUTE_CHUNK],
+      specFiles: RSC_SPEC_FILES,
+      rawMarkdown:
+        '## 🔴 Tests que fallarán\n' +
+        '#### `should show product-detail-loading (OLD — removed from RSC)` — `apps/web/product-detail.spec.ts`\n' +
+        '**Por qué falla:** "product-detail-loading" removido del RSC — ahora el loading es el Suspense fallback\n' +
+        '#### `should fail with old add-to-cart selector` — `apps/web/product-detail.spec.ts`\n' +
+        '**Por qué falla:** "add-to-cart" removido del RSC, reemplazado por "product-add-to-cart-btn" en el client component\n' +
+        '## 🟡 Tests en riesgo\n' +
+        '#### `should show product-cart-error when server action fails` — `apps/web/product-detail.spec.ts`\n' +
+        '**Por qué es riesgo:** Server Action no interceptable con page.route() — requiere mock del fetch interno\n' +
+        '## ✅ Tests no afectados\n' +
+        '- `should show product-interactions-skeleton while client hydrates` — nuevo Suspense fallback correcto\n' +
+        '- `should add to cart via product-add-to-cart-btn` — nuevo selector correcto\n' +
+        '- `should return 401 when POST cart without session cookie` — nuevo API Route handler',
+      predictions: RSC_PREDICTIONS,
+      model: 'llama3.2',
+      temperature: 0.1,
+      analysisStartedAt: Date.now() - 8000,
+      llmDurationMs: 4700,
+    })
+    runId = result.runId
+  }, 30_000)
+
+  neo4jIt('RSC page chunk persiste generateStaticParams y generateMetadata en functions', async () => {
+    const astId = makeASTChunkId(RSC_PRODUCT_PAGE_CHUNK.filename, RSC_PRODUCT_PAGE_CHUNK.rawDiff)
+    const records = await cypher('MATCH (a:ASTChunk {id: $id}) RETURN a', { id: astId })
+    const ast = records[0].get('a').properties
+
+    expect(ast.filename).toBe('apps/web/app/products/[slug]/page.tsx')
+    expect(ast.functions).toContain('generateStaticParams')
+    expect(ast.functions).toContain('generateMetadata')
+    expect(ast.summary).toContain('generateStaticParams')
+    expect(ast.summary).toContain('generateMetadata')
+  })
+
+  neo4jIt('RSC page chunk tiene JSXChanges con solo removedValue (pure removal)', async () => {
+    const astId = makeASTChunkId(RSC_PRODUCT_PAGE_CHUNK.filename, RSC_PRODUCT_PAGE_CHUNK.rawDiff)
+    const records = await cypher(
+      `MATCH (a:ASTChunk {id: $id})-[:HAS_JSX_CHANGE]->(j:JSXChange)
+       RETURN j.addedValue AS added, j.removedValue AS removed ORDER BY j.removedValue`,
+      { id: astId }
+    )
+    expect(records.length).toBeGreaterThanOrEqual(2)
+
+    // Elementos removidos del RSC: product-detail-loading y add-to-cart
+    const removed: (string | null | undefined)[] = records.map((r) => r.get('removed'))
+    expect(removed).toContain('product-detail-loading')
+    expect(removed).toContain('add-to-cart')
+  })
+
+  neo4jIt('ProductInteractions chunk tiene "use client" en rawDiff y 3 JSXChanges nuevos', async () => {
+    const astId = makeASTChunkId(RSC_PRODUCT_INTERACTIONS_CHUNK.filename, RSC_PRODUCT_INTERACTIONS_CHUNK.rawDiff)
+    const records = await cypher('MATCH (a:ASTChunk {id: $id}) RETURN a', { id: astId })
+    const ast = records[0].get('a').properties
+
+    expect(ast.rawDiff).toContain('"use client"')
+    expect(ast.functions).toContain('useTransition')
+    expect(ast.functions).toContain('addToCartAction')
+
+    const jsxRecords = await cypher(
+      `MATCH (a:ASTChunk {id: $id})-[:HAS_JSX_CHANGE]->(j:JSXChange)
+       RETURN j.addedValue AS added ORDER BY j.addedValue`,
+      { id: astId }
+    )
+    expect(jsxRecords).toHaveLength(3)
+    const added: string[] = jsxRecords.map((r) => r.get('added'))
+    expect(added).toContain('product-add-to-cart-btn')
+    expect(added).toContain('product-cart-feedback')
+    expect(added).toContain('product-cart-error')
+  })
+
+  neo4jIt('API Route chunk tiene GET y POST en functions pero CERO JSXChanges', async () => {
+    const astId = makeASTChunkId(RSC_API_ROUTE_CHUNK.filename, RSC_API_ROUTE_CHUNK.rawDiff)
+    const records = await cypher('MATCH (a:ASTChunk {id: $id}) RETURN a', { id: astId })
+    const ast = records[0].get('a').properties
+
+    expect(ast.filename).toBe('apps/web/app/api/products/[slug]/route.ts')
+    expect(ast.functions).toContain('GET')
+    expect(ast.functions).toContain('POST')
+    expect(ast.functions).toContain('cookies')
+    expect(ast.summary).toContain('force-cache')
+
+    const jsxCount = await cypher(
+      'MATCH (a:ASTChunk {id: $id})-[:HAS_JSX_CHANGE]->() RETURN count(*) AS c',
+      { id: astId }
+    )
+    expect(jsxCount[0].get('c').toNumber()).toBe(0)
+  })
+
+  neo4jIt('2 broken (product-detail-loading + add-to-cart) y 1 risk (server action)', async () => {
+    const records = await cypher(
+      `MATCH (run:AnalysisRun {id: $runId})-[:PRODUCED]->(llm:LLMPrediction) RETURN llm`,
+      { runId }
+    )
+    const llm = records[0].get('llm').properties
+    expect(llm.brokenCount.toNumber()).toBe(2)
+    expect(llm.riskCount.toNumber()).toBe(1)
+    expect(llm.okCount.toNumber()).toBe(3)
+  })
+})
+
+// ═══════════════════════════════════════════════════════════
+// Suite 12 — PR #109: packages/api-client v2 + interceptors
+// ═══════════════════════════════════════════════════════════
+
+describe('Integration — PR #109: packages/api-client v1→v2 endpoint migration + interceptors', () => {
+  let runId = ''
+
+  beforeAll(async () => {
+    if (!isConnected) return
+    const result = await persistAnalysisRun(repo, {
+      orgName: TEST_ORG,
+      repoFullName: TEST_REPO,
+      prMetadata: PR_API_CLIENT,
+      astChunks: [ENDPOINT_REGISTRY_CHUNK, API_CLIENT_INTERCEPTORS_CHUNK, WEB_API_CLIENT_INSTANCE_CHUNK],
+      specFiles: API_CLIENT_SPEC_FILES,
+      rawMarkdown:
+        '## 🔴 Tests que fallarán\n' +
+        '#### `should load products via v1 route mock (OLD — will miss)` — `apps/web/product-list.spec.ts`\n' +
+        '**Por qué falla:** EndpointRegistry cambió products.list a /v2/products — el mock de /v1 ya no intercepta\n' +
+        '#### `should load orders via v1 route mock (OLD — will miss after migration)` — `apps/dashboard/orders-list.spec.ts`\n' +
+        '**Por qué falla:** Cross-package blast radius: apps/dashboard no tiene cambios propios pero EndpointRegistry afecta sus rutas\n' +
+        '## 🟡 Tests en riesgo\n' +
+        '#### `should send Authorization header when session cookie present` — `apps/web/product-list.spec.ts`\n' +
+        '**Por qué es riesgo:** getSessionToken lee document.cookie — addCookies debe ser antes de la navegación\n' +
+        '## ✅ Tests no afectados\n' +
+        '- `should load products via v2 route mock (NEW)` — nuevo path correcto\n' +
+        '- `should send X-Correlation-ID header with every request` — interceptor inyecta el header\n' +
+        '- `should load orders via v2 route mock (NEW)` — nuevo path correcto',
+      predictions: API_CLIENT_PREDICTIONS,
+      model: 'llama3.2',
+      temperature: 0.1,
+      analysisStartedAt: Date.now() - 11000,
+      llmDurationMs: 6300,
+    })
+    runId = result.runId
+  }, 30_000)
+
+  neo4jIt('EndpointRegistry chunk persiste la migración v1→v2 en summary', async () => {
+    const astId = makeASTChunkId(ENDPOINT_REGISTRY_CHUNK.filename, ENDPOINT_REGISTRY_CHUNK.rawDiff)
+    const records = await cypher('MATCH (a:ASTChunk {id: $id}) RETURN a', { id: astId })
+    const ast = records[0].get('a').properties
+
+    expect(ast.filename).toBe('packages/api-client/src/EndpointRegistry.ts')
+    expect(ast.summary).toContain('/v2')
+    expect(ast.summary).toContain('cross-package')
+    // Es un archivo de config — sin JSXChanges
+    const jsxCount = await cypher(
+      'MATCH (a:ASTChunk {id: $id})-[:HAS_JSX_CHANGE]->() RETURN count(*) AS c',
+      { id: astId }
+    )
+    expect(jsxCount[0].get('c').toNumber()).toBe(0)
+  })
+
+  neo4jIt('ApiClient chunk tiene useRequestInterceptor y useResponseInterceptor en functions', async () => {
+    const astId = makeASTChunkId(API_CLIENT_INTERCEPTORS_CHUNK.filename, API_CLIENT_INTERCEPTORS_CHUNK.rawDiff)
+    const records = await cypher('MATCH (a:ASTChunk {id: $id}) RETURN a', { id: astId })
+    const ast = records[0].get('a').properties
+
+    expect(ast.functions).toContain('useRequestInterceptor')
+    expect(ast.functions).toContain('useResponseInterceptor')
+    expect(ast.functions).toContain('put')
+    expect(ast.functions).toContain('delete')
+    expect(ast.summary).toContain('X-Correlation-ID')
+
+    // También sin JSXChanges — clase de networking pura
+    const jsxCount = await cypher(
+      'MATCH (a:ASTChunk {id: $id})-[:HAS_JSX_CHANGE]->() RETURN count(*) AS c',
+      { id: astId }
+    )
+    expect(jsxCount[0].get('c').toNumber()).toBe(0)
+  })
+
+  neo4jIt('los 3 chunks son de packages/ y apps/ — cross-package blast radius visible', async () => {
+    const records = await cypher(
+      `MATCH (run:AnalysisRun {id: $runId})-[:INCLUDES]->(ast:ASTChunk)
+       RETURN ast.filename AS filename ORDER BY ast.filename`,
+      { runId }
+    )
+    expect(records).toHaveLength(3)
+    const filenames: string[] = records.map((r) => r.get('filename'))
+
+    expect(filenames.some((f) => f.startsWith('packages/api-client'))).toBe(true)
+    expect(filenames.some((f) => f.startsWith('apps/web'))).toBe(true)
+  })
+
+  neo4jIt('broken test en apps/dashboard sin changes en ese app (cross-package blast radius)', async () => {
+    const records = await cypher(
+      `MATCH (run:AnalysisRun {id: $runId})-[:PRODUCED]->(llm:LLMPrediction)
+             -[:CONTAINS]->(tp:TestPrediction {status: 'broken'})
+       WHERE tp.file CONTAINS 'dashboard'
+       RETURN tp.testName AS name, tp.reason AS reason`,
+      { runId }
+    )
+    expect(records).toHaveLength(1)
+    expect(records[0].get('reason')).toContain('blast radius')
+  })
+
+  neo4jIt('2 broken, 1 risk, 3 ok — distribución correcta de predicciones', async () => {
+    const records = await cypher(
+      'MATCH (run:AnalysisRun {id: $runId})-[:PRODUCED]->(llm:LLMPrediction) RETURN llm',
+      { runId }
+    )
+    const llm = records[0].get('llm').properties
+    expect(llm.brokenCount.toNumber()).toBe(2)
+    expect(llm.riskCount.toNumber()).toBe(1)
+    expect(llm.okCount.toNumber()).toBe(3)
+  })
+})
+
+// ═══════════════════════════════════════════════════════════
+// Suite 13 — PR #110: Middleware expanded + Server Actions + packages/auth
+// ═══════════════════════════════════════════════════════════
+
+describe('Integration — PR #110: Next.js middleware expansion + packages/auth Server Actions', () => {
+  let runId = ''
+
+  beforeAll(async () => {
+    if (!isConnected) return
+    const result = await persistAnalysisRun(repo, {
+      orgName: TEST_ORG,
+      repoFullName: TEST_REPO,
+      prMetadata: PR_AUTH_MIDDLEWARE,
+      astChunks: [MIDDLEWARE_CHUNK, AUTH_PKG_CHUNK, LOGIN_FORM_CHUNK],
+      specFiles: AUTH_MIDDLEWARE_SPEC_FILES,
+      rawMarkdown:
+        '## 🔴 Tests que fallarán\n' +
+        '#### `should sign in via login-submit-btn (OLD selector)` — `apps/web/auth-login.spec.ts`\n' +
+        '**Por qué falla:** "login-submit-btn" renombrado a "auth-login-submit-btn" en la migración a Server Action\n' +
+        '#### `should show login-error (OLD selector — renamed)` — `apps/web/auth-login.spec.ts`\n' +
+        '**Por qué falla:** "login-error" renombrado a "auth-login-error"\n' +
+        '#### `should access /dashboard/settings without auth (before matcher expansion)` — `apps/web/middleware-routes.spec.ts`\n' +
+        '**Por qué falla:** Middleware matcher ahora incluye /dashboard/settings — breakage comportamental sin cambio de selector UI\n' +
+        '## 🟡 Tests en riesgo\n' +
+        '#### `should redirect /checkout to /login when session expired` — `apps/web/middleware-routes.spec.ts`\n' +
+        '**Por qué es riesgo:** validateSession llama a AUTH_SERVICE_URL externo — requiere auth service en E2E\n' +
+        '## ✅ Tests no afectados\n' +
+        '- `should sign in via auth-login-submit-btn (NEW selector)` — selector correcto\n' +
+        '- `should redirect /dashboard/settings to /login when unauthenticated` — comportamiento esperado post-expansion\n' +
+        '- `should show auth-session-banner when redirected with reason=session_expired` — nuevo elemento aria-live',
+      predictions: AUTH_MIDDLEWARE_PREDICTIONS,
+      model: 'llama3.2',
+      temperature: 0.1,
+      analysisStartedAt: Date.now() - 9500,
+      llmDurationMs: 5100,
+    })
+    runId = result.runId
+  }, 30_000)
+
+  neo4jIt('middleware chunk tiene CERO JSXChanges pero genera predicciones broken (behavioral break)', async () => {
+    const astId = makeASTChunkId(MIDDLEWARE_CHUNK.filename, MIDDLEWARE_CHUNK.rawDiff)
+    const jsxCount = await cypher(
+      'MATCH (a:ASTChunk {id: $id})-[:HAS_JSX_CHANGE]->() RETURN count(*) AS c',
+      { id: astId }
+    )
+    expect(jsxCount[0].get('c').toNumber()).toBe(0)
+
+    // El broken test del middleware no tiene JSXChange que lo explique
+    const brokenRecords = await cypher(
+      `MATCH (run:AnalysisRun {id: $runId})-[:PRODUCED]->(llm:LLMPrediction)
+             -[:CONTAINS]->(tp:TestPrediction {status: 'broken'})
+       WHERE tp.testName CONTAINS 'matcher expansion'
+       RETURN tp.reason AS reason`,
+      { runId }
+    )
+    expect(brokenRecords).toHaveLength(1)
+    expect(brokenRecords[0].get('reason')).toContain('behavioral')
+  })
+
+  neo4jIt('packages/auth chunk tiene "use server" en rawDiff y funciones de Server Action', async () => {
+    const astId = makeASTChunkId(AUTH_PKG_CHUNK.filename, AUTH_PKG_CHUNK.rawDiff)
+    const records = await cypher('MATCH (a:ASTChunk {id: $id}) RETURN a', { id: astId })
+    const ast = records[0].get('a').properties
+
+    expect(ast.filename).toBe('packages/auth/src/index.ts')
+    expect(ast.rawDiff).toContain('"use server"')
+    expect(ast.functions).toContain('loginAction')
+    expect(ast.functions).toContain('logoutAction')
+    expect(ast.functions).toContain('cookies')
+    expect(ast.functions).toContain('redirect')
+    expect(ast.summary).toContain('"use server"')
+  })
+
+  neo4jIt('LoginForm chunk tiene los 3 JSXChanges: 2 renombrados + 1 nuevo auth-session-banner', async () => {
+    const astId = makeASTChunkId(LOGIN_FORM_CHUNK.filename, LOGIN_FORM_CHUNK.rawDiff)
+    const records = await cypher(
+      `MATCH (a:ASTChunk {id: $id})-[:HAS_JSX_CHANGE]->(j:JSXChange)
+       RETURN j.addedValue AS added, j.removedValue AS removed ORDER BY j.addedValue`,
+      { id: astId }
+    )
+    expect(records).toHaveLength(3)
+
+    const pairs = records.map((r) => ({ added: r.get('added'), removed: r.get('removed') ?? null }))
+    expect(pairs).toContainEqual({ added: 'auth-login-submit-btn', removed: 'login-submit-btn' })
+    expect(pairs).toContainEqual({ added: 'auth-login-error', removed: 'login-error' })
+    expect(pairs).toContainEqual({ added: 'auth-session-banner', removed: null })
+  })
+
+  neo4jIt('LoginForm chunk tiene useFormState y useFormStatus en functions', async () => {
+    const astId = makeASTChunkId(LOGIN_FORM_CHUNK.filename, LOGIN_FORM_CHUNK.rawDiff)
+    const records = await cypher('MATCH (a:ASTChunk {id: $id}) RETURN a', { id: astId })
+    const ast = records[0].get('a').properties
+
+    expect(ast.functions).toContain('useFormState')
+    expect(ast.functions).toContain('useFormStatus')
+    expect(ast.functions).toContain('loginAction')
+    expect(ast.summary).toContain('useFormStatus')
+  })
+
+  neo4jIt('3 broken (2 selector rename + 1 middleware behavioral), 1 risk, 3 ok', async () => {
+    const records = await cypher(
+      'MATCH (run:AnalysisRun {id: $runId})-[:PRODUCED]->(llm:LLMPrediction) RETURN llm',
+      { runId }
+    )
+    const llm = records[0].get('llm').properties
+    expect(llm.brokenCount.toNumber()).toBe(3)
+    expect(llm.riskCount.toNumber()).toBe(1)
+    expect(llm.okCount.toNumber()).toBe(3)
+  })
+})
+
+// ═══════════════════════════════════════════════════════════
+// Suite 14 — Cross-SSR queries (PRs 108-110)
+// ═══════════════════════════════════════════════════════════
+
+describe('Integration — Cross-SSR graph queries (PRs 108-110)', () => {
+  neo4jIt('el repo tiene los 10 PRs analizados en total (101-110)', async () => {
+    const repoId = makeRepoId(TEST_ORG, 'poc-front-app')
+    const records = await cypher(
+      `MATCH (r:Repo {id: $repoId})-[:HAS_PR]->(pr:PullRequest)
+       WHERE pr.prNumber IN [101, 102, 103, 104, 105, 106, 107, 108, 109, 110]
+       RETURN count(pr) AS c`,
+      { repoId }
+    )
+    expect(records[0].get('c').toNumber()).toBe(10)
+  })
+
+  neo4jIt('Server Components identificados por generateStaticParams en functions', async () => {
+    const records = await cypher(
+      `MATCH (a:ASTChunk)
+       WHERE 'generateStaticParams' IN a.functions
+       RETURN a.filename AS filename`
+    )
+    const filenames: string[] = records.map((r) => r.get('filename'))
+    expect(filenames.some((f) => f.includes('page.tsx'))).toBe(true)
+  })
+
+  neo4jIt('Server Actions identificados por "use server" en rawDiff', async () => {
+    const records = await cypher(
+      `MATCH (a:ASTChunk)
+       WHERE a.rawDiff CONTAINS '"use server"'
+       RETURN a.filename AS filename ORDER BY a.filename`
+    )
+    const filenames: string[] = records.map((r) => r.get('filename'))
+    expect(filenames.some((f) => f.includes('packages/auth'))).toBe(true)
+  })
+
+  neo4jIt('Client Components identificados por "use client" en rawDiff', async () => {
+    const records = await cypher(
+      `MATCH (a:ASTChunk)
+       WHERE a.rawDiff CONTAINS '"use client"' AND NOT a.rawDiff CONTAINS '+"use client"' = false
+       RETURN a.filename AS filename`
+    )
+    // ProductInteractions.tsx y LoginForm.tsx tienen "use client"
+    const filenames: string[] = records.map((r) => r.get('filename'))
+    expect(filenames.length).toBeGreaterThanOrEqual(1)
+  })
+
+  neo4jIt('API Route handlers identificados por GET/POST en functions sin JSXChanges', async () => {
+    const records = await cypher(
+      `MATCH (a:ASTChunk)
+       WHERE 'GET' IN a.functions AND 'POST' IN a.functions
+         AND NOT (a)-[:HAS_JSX_CHANGE]->()
+       RETURN a.filename AS filename`
+    )
+    const filenames: string[] = records.map((r) => r.get('filename'))
+    expect(filenames.some((f) => f.includes('route.ts'))).toBe(true)
+  })
+
+  neo4jIt('infrastructure-only breakage: ASTChunks sin JSXChanges que generan broken predictions', async () => {
+    // Chunks sin JSXChanges cuyos runs producen al menos 1 broken test
+    const records = await cypher(
+      `MATCH (run:AnalysisRun)-[:INCLUDES]->(ast:ASTChunk),
+             (run)-[:PRODUCED]->(llm:LLMPrediction)
+       WHERE NOT (ast)-[:HAS_JSX_CHANGE]->()
+         AND llm.brokenCount > 0
+       RETURN DISTINCT ast.filename AS filename ORDER BY ast.filename`
+    )
+    // Debe incluir middleware.ts (0 JSXChanges pero 3 broken en su run)
+    // y packages/api-client chunks (0 JSXChanges pero 2 broken en su run)
+    expect(records.length).toBeGreaterThanOrEqual(1)
+    const filenames: string[] = records.map((r) => r.get('filename'))
+    expect(filenames.some((f) => f.includes('middleware') || f.includes('api-client'))).toBe(true)
+  })
+
+  neo4jIt('paths de packages/ y apps/ cubren las 3 capas del monorepo en PRs 108-110', async () => {
+    const repoId = makeRepoId(TEST_ORG, 'poc-front-app')
+    const records = await cypher(
+      `MATCH (r:Repo {id: $repoId})-[:HAS_PR]->(pr:PullRequest)
+             -[:ANALYZED_BY]->(run:AnalysisRun)-[:INCLUDES]->(ast:ASTChunk)
+       WHERE pr.prNumber IN [108, 109, 110]
+       RETURN DISTINCT
+         CASE
+           WHEN ast.filename STARTS WITH 'packages/' THEN 'package'
+           WHEN ast.filename STARTS WITH 'apps/' THEN 'app'
+           ELSE 'other'
+         END AS layer
+       ORDER BY layer`,
+      { repoId }
+    )
+    const layers: string[] = records.map((r) => r.get('layer'))
+    expect(layers).toContain('package')
+    expect(layers).toContain('app')
   })
 })
