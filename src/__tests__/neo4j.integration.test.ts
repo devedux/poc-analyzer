@@ -12,7 +12,7 @@
  *   NEO4J_URI=bolt://localhost:7687 NEO4J_USER=neo4j NEO4J_PASSWORD=password npm test
  */
 
-import { describe, it, expect, beforeAll, afterAll } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
 import neo4j from 'neo4j-driver'
 import {
   Neo4jRepository,
@@ -86,6 +86,29 @@ import {
   AUTH_MIDDLEWARE_SPEC_FILES,
   AUTH_MIDDLEWARE_PREDICTIONS,
 } from './fixtures/react-pr-scenarios'
+
+// ─── Mock de embeddings ────────────────────────────────────
+//
+// Los integration tests verifican persistencia en Neo4j y queries Cypher.
+// Ollama no está disponible en CI (ni se necesita para eso).
+// Misma estrategia que graph-persister.test.ts: mock del módulo completo.
+//
+// embedBatch retorna un vector por texto — longitud variable según input.
+// cosineSimilarity se mantiene real (math pura, sin dependencias externas).
+vi.mock('../embeddings', () => ({
+  embed: vi.fn().mockResolvedValue(new Array(768).fill(0.01)),
+  embedBatch: vi.fn().mockImplementation((texts: string[]) =>
+    Promise.resolve(texts.map(() => new Array(768).fill(0.01)))
+  ),
+  buildDiffContextualText: vi.fn().mockReturnValue('mocked-diff-context'),
+  buildSpecContextualText: vi.fn().mockReturnValue('mocked-spec-context'),
+  cosineSimilarity: (a: number[], b: number[]) => {
+    let dot = 0, magA = 0, magB = 0
+    for (let i = 0; i < a.length; i++) { dot += a[i] * b[i]; magA += a[i] * a[i]; magB += b[i] * b[i] }
+    const mag = Math.sqrt(magA) * Math.sqrt(magB)
+    return mag === 0 ? 0 : dot / mag
+  },
+}))
 
 // ─── Configuración de conexión ─────────────────────────────
 // NEO4J_TEST_URI permite apuntar a una BD separada (recomendado para evitar
